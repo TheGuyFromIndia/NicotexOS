@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    
+    <!-- Title & SEO -->
+    <title>Nicotex — Nicotine Reduction Assistant</title>
+    <meta name="description" content="Personal offline-first nicotine reduction assistant for Nicotex gum." />
+    
+    <!-- PWA & Apple iOS Optimizations for iPhone 17 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Nicotex" />
+    <meta name="theme-color" content="#090d16" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="format-detection" content="telephone=no" />
+    
+    <!-- Icons -->
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Anti-flash inline style -->
+    <style>
+      :root {
+        --sat: env(safe-area-inset-top);
+        --sar: env(safe-area-inset-right);
+        --sab: env(safe-area-inset-bottom);
+        --sal: env(safe-area-inset-left);
+      }
+      html, body {
+        background-color: #090d16;
+        color: #f1f5f9;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        -webkit-tap-highlight-color: transparent;
+        overscroll-behavior-y: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      input, textarea, select {
+        user-select: text;
+        -webkit-user-select: text;
+      }
+    </style>
+  </head>
+  <body class="bg-[#090d16] text-slate-100 min-h-screen overflow-x-hidden">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

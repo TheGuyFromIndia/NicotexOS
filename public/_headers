@@ -1,0 +1,19 @@
+# Service Worker must never be cached by CDN to ensure instant updates
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+# App Shell & Manifest
+/manifest.webmanifest
+  Content-Type: application/manifest+json; charset=utf-8
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Static Assets
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Global Security Headers
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), camera=(), microphone=()

@@ -1,0 +1,457 @@
+import React, { useState } from 'react';
+import {
+  Settings,
+  Download,
+  Upload,
+  Trash2,
+  Bell,
+  ShieldAlert,
+  Smartphone,
+  Save,
+  Check,
+  AlertTriangle,
+  FileSpreadsheet,
+  FileCode,
+  Info
+} from 'lucide-react';
+import { Card } from '../components/ui/Card';
+import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/Badge';
+import { Modal } from '../components/ui/Modal';
+import type { AppSettings, NicotexStrength } from '../types';
+import {
+  updateSettings,
+  exportDatabaseToJSON,
+  exportConsumptionToCSV,
+  exportCravingsToCSV,
+  importDatabaseFromJSON,
+  clearAllDatabaseData
+} from '../db';
+
+interface SettingsViewProps {
+  settings: AppSettings | null;
+  onSettingsUpdated: () => void;
+  onOpenInstallGuide: () => void;
+}
+
+export const SettingsView: React.FC<SettingsViewProps> = ({
+  settings,
+  onSettingsUpdated,
+  onOpenInstallGuide
+}) => {
+  // Local edit states
+  const [strength, setStrength] = useState<NicotexStrength>(settings?.strength || '2mg');
+  const [packPrice, setPackPrice] = useState<number>(settings?.packPrice || 115);
+  const [packQuantity, setPackQuantity] = useState<number>(settings?.packQuantity || 9);
+  const [currency, setCurrency] = useState<string>(settings?.currency || '₹');
+  const [baselinePieces, setBaselinePieces] = useState<number>(settings?.baselinePiecesPerDay || 8);
+  const [wakeTime, setWakeTime] = useState<string>(settings?.wakeTime || '07:30');
+  const [sleepTime, setSleepTime] = useState<string>(settings?.sleepTime || '23:30');
+  const [isSaved, setIsSaved] = useState<boolean>(false);
+
+  // Notifications
+  const [notificationStatus, setNotificationStatus] = useState<string>(
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'unsupported'
+  );
+
+  // Restore & Wipe confirmation modals
+  const [isWipeModalOpen, setIsWipeModalOpen] = useState<boolean>(false);
+  const [wipeConfirmText, setWipeConfirmText] = useState<string>('');
+  const [restoreMessage, setRestoreMessage] = useState<{ text: string; error?: boolean } | null>(null);
+
+  const handleSaveSettings = async () => {
+    await updateSettings({
+      strength,
+      packPrice: Number(packPrice),
+      packQuantity: Number(packQuantity),
+      currency,
+      baselinePiecesPerDay: Number(baselinePieces),
+      wakeTime,
+      sleepTime
+    });
+    setIsSaved(true);
+    onSettingsUpdated();
+    setTimeout(() => setIsSaved(false), 2000);
+  };
+
+  const handleExportJSON = async () => {
+    const jsonStr = await exportDatabaseToJSON();
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Nicotex_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportConsumptionCSV = async () => {
+    const csvStr = await exportConsumptionToCSV();
+    const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Nicotex_Consumption_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportCravingsCSV = async () => {
+    const csvStr = await exportCravingsToCSV();
+    const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Nicotex_Cravings_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const res = await importDatabaseFromJSON(text);
+      if (res.success) {
+        setRestoreMessage({ text: res.message });
+        onSettingsUpdated();
+      } else {
+        setRestoreMessage({ text: res.message, error: true });
+      }
+    } catch (err) {
+      setRestoreMessage({ text: 'Error reading JSON backup file.', error: true });
+    }
+  };
+
+  const handleRequestNotifications = async () => {
+    if (!('Notification' in window)) {
+      alert('Notifications are not supported in this browser environment.');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationStatus(permission);
+    if (permission === 'granted') {
+      new Notification('Nicotex Active', {
+        body: 'Local notifications enabled on this device.',
+        icon: '/icons/icon-192x192.png'
+      });
+    }
+  };
+
+  const handleConfirmWipe = async () => {
+    if (wipeConfirmText.toLowerCase() === 'delete') {
+      await clearAllDatabaseData();
+      setIsWipeModalOpen(false);
+      onSettingsUpdated();
+      window.location.reload();
+    }
+  };
+
+  return (
+    <div className="space-y-5 pb-28 max-w-md mx-auto px-4 pt-4">
+      {/* Title */}
+      <div>
+        <h2 className="text-base font-extrabold text-slate-100">Settings & Data Management</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          Local device configuration, export/restore, and privacy controls.
+        </p>
+      </div>
+
+      {/* Storage and Privacy Warning (Section 3 & 13) */}
+      <div className="p-4 rounded-3xl bg-amber-950/25 border border-amber-800/40 space-y-2 text-xs">
+        <div className="flex items-center space-x-2 text-amber-300 font-bold">
+          <ShieldAlert size={16} />
+          <span>Local Storage & Data Persistence</span>
+        </div>
+        <p className="text-slate-300 leading-relaxed text-[11px]">
+          All application records are stored exclusively inside your browser's local IndexedDB. <strong>Hosting this app on the web does NOT automatically sync or back up your data to any cloud.</strong>
+        </p>
+        <p className="text-slate-400 text-[11px] leading-relaxed">
+          Browser cache clearing, iOS storage pressure, private browsing mode, or deleting the Home Screen app may erase local records. We strongly recommend downloading a periodic JSON backup below.
+        </p>
+      </div>
+
+      {/* Configuration Card */}
+      <Card className="space-y-4">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+          Product & Pack Parameters
+        </h3>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Nicotex Strength</label>
+            <div className="flex rounded-xl bg-slate-800 p-1 border border-slate-700/80">
+              {(['2mg', '4mg'] as NicotexStrength[]).map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStrength(s)}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                    strength === s
+                      ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Currency Symbol</label>
+            <input
+              type="text"
+              value={currency}
+              onChange={e => setCurrency(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 text-center font-bold"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Pack Price</label>
+            <input
+              type="number"
+              min="1"
+              value={packPrice}
+              onChange={e => setPackPrice(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Pieces / Pack</label>
+            <input
+              type="number"
+              min="1"
+              value={packQuantity}
+              onChange={e => setPackQuantity(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Wake Time</label>
+            <input
+              type="time"
+              value={wakeTime}
+              onChange={e => setWakeTime(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Sleep Time</label>
+            <input
+              type="time"
+              value={sleepTime}
+              onChange={e => setSleepTime(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-300 block mb-1">
+            Baseline Pieces Per Day (Reference)
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={baselinePieces}
+            onChange={e => setBaselinePieces(Number(e.target.value))}
+            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+          />
+        </div>
+
+        <Button
+          variant="primary"
+          size="md"
+          fullWidth
+          onClick={handleSaveSettings}
+        >
+          {isSaved ? (
+            <>
+              <Check size={16} className="mr-1.5" /> Saved Settings
+            </>
+          ) : (
+            <>
+              <Save size={16} className="mr-1.5" /> Save Changes
+            </>
+          )}
+        </Button>
+      </Card>
+
+      {/* Backup, Restore & CSV Export Card (Section 13) */}
+      <Card className="space-y-4">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+          Data Export & Restore
+        </h3>
+
+        <div className="space-y-2">
+          <Button
+            variant="outline"
+            size="md"
+            fullWidth
+            onClick={handleExportJSON}
+            className="justify-start text-xs"
+          >
+            <FileCode size={16} className="mr-2 text-cyan-400" />
+            Download Complete Backup (.JSON)
+          </Button>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportConsumptionCSV}
+              className="text-xs justify-start"
+            >
+              <FileSpreadsheet size={15} className="mr-1.5 text-emerald-400" />
+              Pieces CSV
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportCravingsCSV}
+              className="text-xs justify-start"
+            >
+              <FileSpreadsheet size={15} className="mr-1.5 text-amber-400" />
+              Cravings CSV
+            </Button>
+          </div>
+        </div>
+
+        {/* Restore from JSON */}
+        <div className="pt-2 border-t border-slate-800 space-y-2">
+          <label className="text-xs font-semibold text-slate-300 block">
+            Restore Records from JSON Backup:
+          </label>
+          <div className="relative">
+            <input
+              type="file"
+              accept=".json"
+              onChange={handleImportFile}
+              className="block w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-cyan-400 hover:file:bg-slate-700 cursor-pointer"
+            />
+          </div>
+
+          {restoreMessage && (
+            <p className={`text-xs ${restoreMessage.error ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {restoreMessage.text}
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {/* iOS Notifications & Safari Installation (Section 4 & 12) */}
+      <Card className="space-y-3">
+        <div className="flex items-center space-x-2">
+          <Smartphone size={16} className="text-cyan-400" />
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            iPhone 17 & Notifications
+          </h3>
+        </div>
+
+        <p className="text-xs text-slate-400 leading-relaxed">
+          On iOS 16.4+, web notifications require adding Nicotex to your Home Screen first via Safari's Share menu.
+        </p>
+
+        <div className="flex items-center justify-between pt-1">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onOpenInstallGuide}
+            className="text-xs"
+          >
+            Safari Install Guide
+          </Button>
+
+          <Button
+            size="sm"
+            variant={notificationStatus === 'granted' ? 'secondary' : 'primary'}
+            onClick={handleRequestNotifications}
+            disabled={notificationStatus === 'granted'}
+            className="text-xs"
+          >
+            <Bell size={14} className="mr-1.5" />
+            {notificationStatus === 'granted' ? 'Notifications Active' : 'Enable Notifications'}
+          </Button>
+        </div>
+      </Card>
+
+      {/* Danger Zone: Erase All Data */}
+      <Card className="border-rose-900/40 bg-rose-950/10 space-y-3">
+        <div className="flex items-center space-x-2 text-rose-400">
+          <AlertTriangle size={16} />
+          <h3 className="text-xs font-bold uppercase tracking-wider">Danger Zone</h3>
+        </div>
+        <p className="text-xs text-slate-400">
+          Permanently clear all consumption records, craving events, and reduction plans from this device.
+        </p>
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={() => setIsWipeModalOpen(true)}
+        >
+          <Trash2 size={14} className="mr-1.5" /> Erase All Application Data
+        </Button>
+      </Card>
+
+      {/* Version Indicator */}
+      <div className="text-center text-[11px] text-slate-600 space-y-1">
+        <p>Nicotex OS • Version 1.0.0 (Production Build)</p>
+        <p>Client-side IndexedDB • Zero Cloud Telemetry</p>
+      </div>
+
+      {/* Erase Confirmation Modal */}
+      <Modal
+        isOpen={isWipeModalOpen}
+        onClose={() => setIsWipeModalOpen(false)}
+        title="Confirm Data Erasure"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-rose-300 leading-relaxed">
+            This action will irreversibly delete all your Nicotex gum logs, cravings, reduction plans, and streak history from this device.
+          </p>
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">
+              Type <span className="font-mono text-rose-400">DELETE</span> to confirm:
+            </label>
+            <input
+              type="text"
+              value={wipeConfirmText}
+              onChange={e => setWipeConfirmText(e.target.value)}
+              placeholder="DELETE"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => setIsWipeModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="md"
+              disabled={wipeConfirmText.toLowerCase() !== 'delete'}
+              onClick={handleConfirmWipe}
+            >
+              Permanently Erase
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+};
