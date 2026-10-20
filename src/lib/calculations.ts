@@ -8,7 +8,12 @@ import type {
   DailyWakeSession,
   PlannedDoseWindow,
   MealDrinkEvent,
-  ScheduleMode
+  ScheduleMode,
+  PurchaseRecord,
+  PurchaseUrgeEvent,
+  InventoryAdjustment,
+  FinancialMotivation,
+  RetailerSource
 } from '../types';
 import { getLocalDateString } from '../db';
 
@@ -941,3 +946,365 @@ export function buildDailyTimeline(
 
   return items.sort((a, b) => a.timestamp - b.timestamp);
 }
+
+// ==========================================
+// ADDICTION COST, INVENTORY & PURCHASE LOGIC
+// ==========================================
+
+/**
+ * Format numbers in Indian Rupees with comma separators (e.g. ₹482, ₹1,250, ₹25,000)
+ */
+export function formatINR(amount: number): string {
+  const rounded = Math.round(amount);
+  const isNegative = rounded < 0;
+  const absStr = Math.abs(rounded).toString();
+
+  if (absStr.length <= 3) {
+    return `${isNegative ? '-' : ''}₹${absStr}`;
+  }
+
+  const lastThree = absStr.substring(absStr.length - 3);
+  const remaining = absStr.substring(0, absStr.length - 3);
+  const withCommas = remaining.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + lastThree;
+
+  return `${isNegative ? '-' : ''}₹${withCommas}`;
+}
+
+export interface PurchaseFinancialMetrics {
+  totalSpentAllTime: number;
+  totalPiecesPurchased: number;
+  avgCostPerPiece: number;
+  totalDeliveryFees: number;
+  totalDiscounts: number;
+  spentToday: number;
+  spentLast7Days: number;
+  spentLast30Days: number;
+  spentCurrentMonth: number;
+  estimatedMonthlySpending: number;
+  estimatedAnnualSpending: number;
+  repeatPurchasesTotalSpent: number;
+  repeatPurchasesCount: number;
+  spendingByRetailer: { retailer: string; total: number; count: number; pct: number }[];
+  hasPurchases: boolean;
+  purchaseCount: number;
+}
+
+/**
+ * Calculate comprehensive financial metrics strictly from actual purchase records
+ */
+export function calculatePurchaseFinancials(
+  purchases: PurchaseRecord[],
+  baselineMonthlyEstimate: number = 3500,
+  now: number = Date.now()
+): PurchaseFinancialMetrics {
+  if (purchases.length === 0) {
+    return {
+      totalSpentAllTime: 0,
+      totalPiecesPurchased: 0,
+      avgCostPerPiece: 0,
+      totalDeliveryFees: 0,
+      totalDiscounts: 0,
+      spentToday: 0,
+      spentLast7Days: 0,
+      spentLast30Days: 0,
+      spentCurrentMonth: 0,
+      estimatedMonthlySpending: baselineMonthlyEstimate,
+      estimatedAnnualSpending: baselineMonthlyEstimate * 12,
+      repeatPurchasesTotalSpent: 0,
+      repeatPurchasesCount: 0,
+      spendingByRetailer: [],
+      hasPurchases: false,
+      purchaseCount: 0
+    };
+  }
+
+  const todayStr = getLocalDateString(new Date(now));
+  const sevenDaysAgoMs = now - 7 * 86400000;
+  const thirtyDaysAgoMs = now - 30 * 86400000;
+
+  const currentYear = new Date(now).getFullYear();
+  const currentMonth = new Date(now).getMonth();
+
+  let totalSpentAllTime = 0;
+  let totalPiecesPurchased = 0;
+  let totalDeliveryFees = 0;
+  let totalDiscounts = 0;
+  let spentToday = 0;
+  let spentLast7Days = 0;
+  let spentLast30Days = 0;
+  let spentCurrentMonth = 0;
+  let repeatPurchasesTotalSpent = 0;
+  let repeatPurchasesCount = 0;
+
+  const retailerMap: Record<string, { total: number; count: number }> = {};
+
+  for (const p of purchases) {
+    totalSpentAllTime += p.totalPaid;
+    totalPiecesPurchased += (p.packsCount * p.piecesPerPack);
+    totalDeliveryFees += (p.deliveryCharge || 0);
+    totalDiscounts += (p.discount || 0);
+
+    if (p.dateStr === todayStr) {
+      spentToday += p.totalPaid;
+    }
+
+    if (p.timestamp >= sevenDaysAgoMs) {
+      spentLast7Days += p.totalPaid;
+    }
+
+    if (p.timestamp >= thirtyDaysAgoMs) {
+      spentLast30Days += p.totalPaid;
+    }
+
+    const pDate = new Date(p.timestamp);
+    if (pDate.getFullYear() === currentYear && pDate.getMonth() === currentMonth) {
+      spentCurrentMonth += p.totalPaid;
+    }
+
+    if (p.isRepeatPurchase) {
+      repeatPurchasesTotalSpent += p.totalPaid;
+      repeatPurchasesCount++;
+    }
+
+    const ret = p.retailer || 'Other';
+    if (!retailerMap[ret]) {
+      retailerMap[ret] = { total: 0, count: 0 };
+    }
+    retailerMap[ret].total += p.totalPaid;
+    retailerMap[ret].count++;
+  }
+
+  const avgCostPerPiece = totalPiecesPurchased > 0
+    ? Number((totalSpentAllTime / totalPiecesPurchased).toFixed(2))
+    : 0;
+
+  // Extrapolate monthly spending:
+  // If we have purchases in last 30 days, extrapolate based on 30-day rate
+  let estimatedMonthlySpending = spentLast30Days;
+  if (spentLast30Days === 0 && totalSpentAllTime > 0) {
+    // If tracking just started with fewer days, use all time rate
+    const oldestTimestamp = Math.min(...purchases.map(p => p.timestamp));
+    const daysTracked = Math.max(1, Math.ceil((now - oldestTimestamp) / 86400000));
+    estimatedMonthlySpending = Math.round((totalSpentAllTime / daysTracked) * 30);
+  } else if (spentLast30Days > 0) {
+    const oldestIn30Days = Math.min(...purchases.filter(p => p.timestamp >= thirtyDaysAgoMs).map(p => p.timestamp));
+    const daysInWindow = Math.max(1, Math.ceil((now - oldestIn30Days) / 86400000));
+    estimatedMonthlySpending = Math.round((spentLast30Days / daysInWindow) * 30);
+  }
+
+  const estimatedAnnualSpending = estimatedMonthlySpending * 12;
+
+  const spendingByRetailer = Object.entries(retailerMap)
+    .map(([retailer, data]) => ({
+      retailer,
+      total: data.total,
+      count: data.count,
+      pct: totalSpentAllTime > 0 ? Math.round((data.total / totalSpentAllTime) * 100) : 0
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  return {
+    totalSpentAllTime: Number(totalSpentAllTime.toFixed(2)),
+    totalPiecesPurchased,
+    avgCostPerPiece,
+    totalDeliveryFees: Number(totalDeliveryFees.toFixed(2)),
+    totalDiscounts: Number(totalDiscounts.toFixed(2)),
+    spentToday: Number(spentToday.toFixed(2)),
+    spentLast7Days: Number(spentLast7Days.toFixed(2)),
+    spentLast30Days: Number(spentLast30Days.toFixed(2)),
+    spentCurrentMonth: Number(spentCurrentMonth.toFixed(2)),
+    estimatedMonthlySpending,
+    estimatedAnnualSpending,
+    repeatPurchasesTotalSpent: Number(repeatPurchasesTotalSpent.toFixed(2)),
+    repeatPurchasesCount,
+    spendingByRetailer,
+    hasPurchases: true,
+    purchaseCount: purchases.length
+  };
+}
+
+export interface InventoryStatus {
+  totalPiecesPurchased: number;
+  totalPiecesConsumed: number;
+  totalAdjustments: number;
+  openingStock: number;
+  estimatedRemainingStock: number;
+  purchasedLast7Days: number;
+  consumedLast7Days: number;
+  purchasedLast30Days: number;
+  consumedLast30Days: number;
+  isUncertain: boolean;
+}
+
+/**
+ * Track inventory estimate separating purchases from consumption
+ */
+export function calculateInventoryStatus(
+  purchases: PurchaseRecord[],
+  consumptionEvents: ConsumptionEvent[],
+  openingStock: number = 0,
+  adjustments: InventoryAdjustment[] = [],
+  now: number = Date.now()
+): InventoryStatus {
+  const sevenDaysAgoMs = now - 7 * 86400000;
+  const thirtyDaysAgoMs = now - 30 * 86400000;
+
+  let totalPiecesPurchased = 0;
+  let purchasedLast7Days = 0;
+  let purchasedLast30Days = 0;
+
+  for (const p of purchases) {
+    const pieces = p.packsCount * p.piecesPerPack;
+    totalPiecesPurchased += pieces;
+    if (p.timestamp >= sevenDaysAgoMs) {
+      purchasedLast7Days += pieces;
+    }
+    if (p.timestamp >= thirtyDaysAgoMs) {
+      purchasedLast30Days += pieces;
+    }
+  }
+
+  let totalPiecesConsumed = 0;
+  let consumedLast7Days = 0;
+  let consumedLast30Days = 0;
+
+  for (const c of consumptionEvents) {
+    const qty = c.quantity || 1;
+    totalPiecesConsumed += qty;
+    if (c.timestamp >= sevenDaysAgoMs) {
+      consumedLast7Days += qty;
+    }
+    if (c.timestamp >= thirtyDaysAgoMs) {
+      consumedLast30Days += qty;
+    }
+  }
+
+  let totalAdjustments = 0;
+  for (const adj of adjustments) {
+    totalAdjustments += adj.piecesAdjusted;
+  }
+
+  const estimatedRemainingStock = Math.max(
+    0,
+    openingStock + totalPiecesPurchased - totalPiecesConsumed + totalAdjustments
+  );
+
+  // Uncertainty flag: if user consumed pieces without any purchases or opening stock recorded
+  const isUncertain = (purchases.length === 0 && openingStock === 0 && totalPiecesConsumed > 0) ||
+    (totalPiecesPurchased + openingStock < totalPiecesConsumed);
+
+  return {
+    totalPiecesPurchased,
+    totalPiecesConsumed,
+    totalAdjustments,
+    openingStock,
+    estimatedRemainingStock,
+    purchasedLast7Days,
+    consumedLast7Days,
+    purchasedLast30Days,
+    consumedLast30Days,
+    isUncertain
+  };
+}
+
+export interface RepeatPurchaseCheckResult {
+  isRepeat: boolean;
+  previousPurchase: PurchaseRecord | null;
+  prevPurchase?: PurchaseRecord | null;
+  elapsedHours: number;
+  hoursSinceLast?: number;
+  combinedSpend: number;
+  combinedPieces: number;
+  headline: string;
+  detail: string;
+  motivationsNotice: string;
+}
+
+/**
+ * Detect repeat purchases across midnight using actual elapsed time
+ */
+export function detectRepeatPurchase(
+  current: number | { timestamp: number; totalPaid?: number; pieces?: number },
+  previousPurchases: PurchaseRecord[],
+  windowHours: number = 24
+): RepeatPurchaseCheckResult {
+  const currentTimestamp = typeof current === 'number' ? current : current.timestamp;
+  const currentPaid = typeof current === 'number' ? 0 : (current.totalPaid || 0);
+  const currentPieces = typeof current === 'number' ? 0 : (current.pieces || 0);
+
+  // Sort previous purchases strictly before current purchase timestamp
+  const earlier = previousPurchases
+    .filter(p => p.timestamp < currentTimestamp)
+    .sort((a, b) => b.timestamp - a.timestamp);
+
+  const prev = earlier[0] || null;
+
+  if (!prev) {
+    return {
+      isRepeat: false,
+      previousPurchase: null,
+      prevPurchase: null,
+      elapsedHours: 0,
+      hoursSinceLast: 0,
+      combinedSpend: currentPaid,
+      combinedPieces: currentPieces,
+      headline: '',
+      detail: '',
+      motivationsNotice: ''
+    };
+  }
+
+  const elapsedMs = currentTimestamp - prev.timestamp;
+  const elapsedHours = Number((elapsedMs / 3600000).toFixed(1));
+
+  if (elapsedHours <= windowHours) {
+    const prevPieces = prev.packsCount * prev.piecesPerPack;
+    const combinedSpend = Number((currentPaid + prev.totalPaid).toFixed(2));
+    const combinedPieces = currentPieces + prevPieces;
+    const roundedHours = Math.max(1, Math.round(elapsedHours));
+
+    const headline = `You bought Nicotex twice in about ${roundedHours} hours.`;
+    const detail = `You've spent ₹${combinedSpend} on these two purchases, including any recorded delivery charges. That's ${combinedPieces} pieces purchased. You also made another purchase soon after the first one. Was this driven by stress, a difficult day, or running out sooner than expected?`;
+    const motivationsNotice = `Remember why you're doing this: reducing your expenses, staying ahead of your EMIs, having more money for travel and investments, and working toward quitting for yourself and the people you care about.`;
+
+    return {
+      isRepeat: true,
+      previousPurchase: prev,
+      prevPurchase: prev,
+      elapsedHours,
+      hoursSinceLast: elapsedHours,
+      combinedSpend,
+      combinedPieces,
+      headline,
+      detail,
+      motivationsNotice
+    };
+  }
+
+  return {
+    isRepeat: false,
+    previousPurchase: prev,
+    prevPurchase: prev,
+    elapsedHours,
+    hoursSinceLast: elapsedHours,
+    combinedSpend: currentPaid,
+    combinedPieces: currentPieces,
+    headline: '',
+    detail: '',
+    motivationsNotice: ''
+  };
+}
+
+/**
+ * Retrieve enabled personal motivations
+ */
+export function getRelevantMotivations(
+  motivations: FinancialMotivation[] = [],
+  maxCount: number = 2
+): FinancialMotivation[] {
+  return motivations
+    .filter(m => m.enabled)
+    .sort((a, b) => (a.order || 0) - (b.order || 0))
+    .slice(0, maxCount);
+}
+

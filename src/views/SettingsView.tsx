@@ -13,20 +13,27 @@ import {
   FileSpreadsheet,
   FileCode,
   Sunrise,
-  Clock
+  Clock,
+  Heart,
+  Plus,
+  IndianRupee,
+  Package,
+  Target
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Modal } from '../components/ui/Modal';
-import type { AppSettings, NicotexStrength, ScheduleMode } from '../types';
+import type { AppSettings, NicotexStrength, ScheduleMode, FinancialMotivation } from '../types';
 import {
   updateSettings,
   exportDatabaseToJSON,
   exportConsumptionToCSV,
   exportCravingsToCSV,
+  exportPurchasesToCSV,
   importDatabaseFromJSON,
   clearAllDatabaseData
 } from '../db';
+import { formatINR } from '../lib/calculations';
 
 interface SettingsViewProps {
   settings: AppSettings | null;
@@ -50,6 +57,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>(settings?.scheduleMode || 'actual_wake');
   const [firstDoseDelayMinutes, setFirstDoseDelayMinutes] = useState<number>(settings?.firstDoseDelayMinutes || 30);
   const [minSpacingMinutes, setMinSpacingMinutes] = useState<number>(settings?.minSpacingMinutes || 90);
+
+  // Financial & Inventory settings
+  const [openingStockPieces, setOpeningStockPieces] = useState<number>(settings?.openingStockPieces ?? 0);
+  const [monthlyBudgetLimit, setMonthlyBudgetLimit] = useState<number>(settings?.monthlyNicotexBudgetLimit ?? 3000);
+  const [historicalMonthlyEstimate, setHistoricalMonthlyEstimate] = useState<number>(
+    settings?.historicalMonthlySpendingEstimate ?? 3500
+  );
+  const [motivations, setMotivations] = useState<FinancialMotivation[]>(
+    settings?.financialMotivations || [
+      { id: 'mot_emi', category: 'emi', title: 'Staying ahead of monthly EMI commitments', targetAmount: 25000, enabled: true },
+      { id: 'mot_travel', category: 'travel', title: 'Building a travel & vacation fund', targetAmount: 50000, enabled: true },
+      { id: 'mot_invest', category: 'investment', title: 'Investing in long-term wealth & mutual funds', targetAmount: 15000, enabled: true },
+      { id: 'mot_loved_ones', category: 'relationships', title: 'Being fully present for myself and loved ones', enabled: true },
+      { id: 'mot_health', category: 'health', title: 'Freedom from chemical oral dependence & anxiety', enabled: true }
+    ]
+  );
+  const [newMotivationTitle, setNewMotivationTitle] = useState<string>('');
+  const [newMotivationTarget, setNewMotivationTarget] = useState<string>('');
+  const [isAddingMotivation, setIsAddingMotivation] = useState<boolean>(false);
+
   const [isSaved, setIsSaved] = useState<boolean>(false);
 
   // Notifications
@@ -73,11 +100,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       sleepTime,
       scheduleMode,
       firstDoseDelayMinutes: Number(firstDoseDelayMinutes),
-      minSpacingMinutes: Number(minSpacingMinutes)
+      minSpacingMinutes: Number(minSpacingMinutes),
+      openingStockPieces: Number(openingStockPieces),
+      monthlyNicotexBudgetLimit: Number(monthlyBudgetLimit) > 0 ? Number(monthlyBudgetLimit) : undefined,
+      historicalMonthlySpendingEstimate: Number(historicalMonthlyEstimate),
+      financialMotivations: motivations
     });
     setIsSaved(true);
     onSettingsUpdated();
     setTimeout(() => setIsSaved(false), 2000);
+  };
+
+  const handleToggleMotivation = (id: string) => {
+    setMotivations(prev =>
+      prev.map(m => (m.id === id ? { ...m, enabled: !m.enabled } : m))
+    );
+  };
+
+  const handleUpdateMotivationTarget = (id: string, target?: number) => {
+    setMotivations(prev =>
+      prev.map(m => (m.id === id ? { ...m, targetAmount: target } : m))
+    );
+  };
+
+  const handleDeleteMotivation = (id: string) => {
+    setMotivations(prev => prev.filter(m => m.id !== id));
+  };
+
+  const handleAddCustomMotivation = () => {
+    if (!newMotivationTitle.trim()) return;
+    const newMot: FinancialMotivation = {
+      id: `mot_custom_${Date.now()}`,
+      category: 'other',
+      title: newMotivationTitle.trim(),
+      targetAmount: Number(newMotivationTarget) > 0 ? Number(newMotivationTarget) : undefined,
+      enabled: true
+    };
+    setMotivations(prev => [...prev, newMot]);
+    setNewMotivationTitle('');
+    setNewMotivationTarget('');
+    setIsAddingMotivation(false);
   };
 
   const handleExportJSON = async () => {
@@ -109,6 +171,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const a = document.createElement('a');
     a.href = url;
     a.download = `Nicotex_Cravings_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportPurchasesCSV = async () => {
+    const csvStr = await exportPurchasesToCSV();
+    const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Nicotex_Purchases_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -371,6 +444,185 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </Button>
       </Card>
 
+      {/* Why I'm Quitting: Financial & Personal Motivations */}
+      <Card className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Heart size={16} className="text-rose-400" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+              Why I'm Quitting: Motivations
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsAddingMotivation(!isAddingMotivation)}
+            className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center space-x-1"
+          >
+            <Plus size={13} />
+            <span>Add Goal</span>
+          </button>
+        </div>
+
+        <p className="text-xs text-slate-400 leading-relaxed">
+          These reasons remind you what your money can achieve when you pause before buying or reach for another pack.
+        </p>
+
+        {/* List of motivations */}
+        <div className="space-y-2 pt-1">
+          {motivations.map(m => (
+            <div
+              key={m.id}
+              className={`p-3 rounded-2xl border transition-all text-xs space-y-2 ${
+                m.enabled
+                  ? 'bg-slate-900 border-slate-700/80 text-slate-200'
+                  : 'bg-slate-900/40 border-slate-800 text-slate-500'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold flex-1 pr-2">{m.title}</span>
+                <button
+                  type="button"
+                  onClick={() => handleToggleMotivation(m.id)}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all ${
+                    m.enabled
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                      : 'bg-slate-800 border-slate-700 text-slate-400'
+                  }`}
+                >
+                  {m.enabled ? 'Active' : 'Paused'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center space-x-1 text-slate-400">
+                  <span>Target fund:</span>
+                  <input
+                    type="number"
+                    value={m.targetAmount || ''}
+                    placeholder="Optional ₹"
+                    onChange={e => handleUpdateMotivationTarget(m.id, Number(e.target.value) || undefined)}
+                    className="w-24 bg-slate-800 border border-slate-700 rounded-lg px-2 py-0.5 text-xs text-slate-200 font-mono"
+                  />
+                </div>
+                {m.category === 'other' && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteMotivation(m.id)}
+                    className="text-slate-500 hover:text-rose-400 text-[10px]"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Add custom motivation form */}
+        {isAddingMotivation && (
+          <div className="p-3 rounded-2xl bg-slate-950 border border-cyan-800/60 space-y-2.5 animate-in fade-in text-xs">
+            <span className="text-[11px] font-bold text-cyan-300 block">Add New Personal Motivation</span>
+            <input
+              type="text"
+              placeholder="e.g. Gift for parents, clearing credit card, trek in Ladakh"
+              value={newMotivationTitle}
+              onChange={e => setNewMotivationTitle(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
+            />
+            <div className="flex items-center space-x-2">
+              <input
+                type="number"
+                placeholder="Target Amount ₹ (optional)"
+                value={newMotivationTarget}
+                onChange={e => setNewMotivationTarget(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 font-mono"
+              />
+              <Button size="sm" variant="primary" onClick={handleAddCustomMotivation}>
+                Add
+              </Button>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Nicotex Budget & Inventory Defaults */}
+      <Card className="space-y-4">
+        <div className="flex items-center space-x-2">
+          <Target size={16} className="text-cyan-400" />
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            Nicotex Budget & Inventory Settings
+          </h3>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">
+              Monthly Nicotex Budget Limit (₹)
+            </label>
+            <input
+              type="number"
+              min="0"
+              placeholder="e.g. 3000"
+              value={monthlyBudgetLimit || ''}
+              onChange={e => setMonthlyBudgetLimit(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
+            />
+            <span className="text-[10px] text-slate-400 mt-1 block">
+              Displays spending warnings in a supportive, non-judgmental way.
+            </span>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">
+              Historical Monthly Spending Baseline (₹)
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={historicalMonthlyEstimate}
+              onChange={e => setHistoricalMonthlyEstimate(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
+            />
+            <span className="text-[10px] text-amber-400/90 mt-1 block">
+              * Used as an estimated reference baseline before you started logging purchases.
+            </span>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">
+              Opening Stock (Pieces in hand when you started)
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={openingStockPieces}
+              onChange={e => setOpeningStockPieces(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
+            />
+            <span className="text-[10px] text-slate-400 mt-1 block">
+              Used to calculate remaining gum inventory accurately (Purchased + Opening - Consumed).
+            </span>
+          </div>
+        </div>
+
+        <Button
+          variant="primary"
+          size="md"
+          fullWidth
+          onClick={handleSaveSettings}
+        >
+          {isSaved ? (
+            <>
+              <Check size={16} className="mr-1.5" /> Saved Budget & Defaults
+            </>
+          ) : (
+            <>
+              <Save size={16} className="mr-1.5" /> Save Budget & Defaults
+            </>
+          )}
+        </Button>
+      </Card>
+
       {/* Backup, Restore & CSV Export Card */}
       <Card className="space-y-4">
         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -389,14 +641,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             Download Complete Backup (.JSON)
           </Button>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <Button
               variant="outline"
               size="sm"
               onClick={handleExportConsumptionCSV}
               className="text-xs justify-start"
             >
-              <FileSpreadsheet size={15} className="mr-1.5 text-emerald-400" />
+              <FileSpreadsheet size={14} className="mr-1 text-emerald-400" />
               Pieces CSV
             </Button>
 
@@ -406,8 +658,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               onClick={handleExportCravingsCSV}
               className="text-xs justify-start"
             >
-              <FileSpreadsheet size={15} className="mr-1.5 text-amber-400" />
+              <FileSpreadsheet size={14} className="mr-1 text-amber-400" />
               Cravings CSV
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportPurchasesCSV}
+              className="text-xs justify-start"
+            >
+              <FileSpreadsheet size={14} className="mr-1 text-cyan-400" />
+              Purchases CSV
             </Button>
           </div>
         </div>

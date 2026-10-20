@@ -8,17 +8,22 @@ import type {
   ReductionPlan,
   DailyWakeSession,
   PlannedDoseWindow,
-  MealDrinkEvent
+  MealDrinkEvent,
+  PurchaseRecord
 } from './types';
+import { calculateInventoryStatus } from './lib/calculations';
 import { Header } from './components/Header';
 import { BottomNav, type TabType } from './components/BottomNav';
 import { DashboardView } from './views/DashboardView';
+import { SpendingSavingsView } from './views/SpendingSavingsView';
 import { CravingsView } from './views/CravingsView';
 import { ReductionPlanView } from './views/ReductionPlanView';
 import { AnalyticsView } from './views/AnalyticsView';
 import { SettingsView } from './views/SettingsView';
 import { LogNicotexModal } from './components/LogNicotexModal';
 import { CravingInterceptionModal } from './components/CravingInterceptionModal';
+import { PurchaseModal } from './components/PurchaseModal';
+import { PurchaseInterruptionModal } from './components/PurchaseInterruptionModal';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { OnboardingModal } from './components/OnboardingModal';
 import { MealPlannerModal } from './components/MealPlannerModal';
@@ -37,6 +42,11 @@ export const App: React.FC = () => {
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState<boolean>(false);
 
+  // Purchase Modals
+  const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState<boolean>(false);
+  const [editingPurchase, setEditingPurchase] = useState<PurchaseRecord | null>(null);
+  const [isPurchaseInterruptionOpen, setIsPurchaseInterruptionOpen] = useState<boolean>(false);
+
   const todayStr = getLocalDateString();
 
   // Live query from Dexie IndexedDB
@@ -50,6 +60,7 @@ export const App: React.FC = () => {
 
   const consumption = useLiveQuery(() => db.consumption.orderBy('timestamp').toArray()) || [];
   const cravings = useLiveQuery(() => db.cravings.orderBy('timestamp').toArray()) || [];
+  const purchases = useLiveQuery(() => db.purchases.orderBy('timestamp').toArray()) || [];
 
   // Wake session, planned windows, and meal events for today
   const wakeSession = useLiveQuery(() => db.wakeSessions.get(`wake_${todayStr}`)) || null;
@@ -59,6 +70,13 @@ export const App: React.FC = () => {
   const mealEvents = useLiveQuery(() =>
     db.mealEvents.where('dateStr').equals(todayStr).sortBy('timestamp')
   ) || [];
+
+  // Calculate current inventory status for interruption modal
+  const inventory = calculateInventoryStatus(
+    purchases,
+    consumption,
+    settings?.openingStockPieces || 0
+  );
 
   // Check onboarding status on initial load
   useEffect(() => {
@@ -101,6 +119,11 @@ export const App: React.FC = () => {
     setIsLogModalOpen(true);
   };
 
+  const handleOpenPurchaseModal = (purchase?: PurchaseRecord) => {
+    setEditingPurchase(purchase || null);
+    setIsPurchaseModalOpen(true);
+  };
+
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 flex flex-col font-sans select-none antialiased">
       {/* Top Mobile Header */}
@@ -118,15 +141,29 @@ export const App: React.FC = () => {
             currentPlan={currentPlan || null}
             consumption={consumption}
             cravings={cravings}
+            purchases={purchases}
             wakeSession={wakeSession}
             plannedWindows={plannedWindows}
             mealEvents={mealEvents}
             onOpenLogModal={handleOpenLogModal}
             onOpenCravingModal={() => setIsCravingModalOpen(true)}
+            onOpenPurchaseModal={handleOpenPurchaseModal}
+            onOpenInterruptionModal={() => setIsPurchaseInterruptionOpen(true)}
+            onNavigateToSpending={() => setActiveTab('spending')}
             onQuickLog={handleQuickLog}
             onNavigateToPlan={() => setActiveTab('plan')}
             onOpenMealModal={() => setIsMealModalOpen(true)}
             onWakeSessionUpdated={() => {}}
+          />
+        )}
+
+        {activeTab === 'spending' && (
+          <SpendingSavingsView
+            purchases={purchases}
+            consumptionEvents={consumption}
+            settings={settings || null}
+            onOpenPurchaseModal={handleOpenPurchaseModal}
+            onOpenInterruptionModal={() => setIsPurchaseInterruptionOpen(true)}
           />
         )}
 
@@ -206,6 +243,33 @@ export const App: React.FC = () => {
           setIsScheduledDefault(false);
           setTargetWindow(null);
           setIsLogModalOpen(true);
+        }}
+      />
+
+      {/* Purchase Logging Modal */}
+      <PurchaseModal
+        isOpen={isPurchaseModalOpen}
+        onClose={() => {
+          setIsPurchaseModalOpen(false);
+          setEditingPurchase(null);
+        }}
+        existingPurchase={editingPurchase}
+        settings={settings || null}
+        previousPurchases={purchases}
+        onPurchaseSaved={() => {}}
+      />
+
+      {/* "I'm About to Buy Nicotex" Interruption Modal */}
+      <PurchaseInterruptionModal
+        isOpen={isPurchaseInterruptionOpen}
+        onClose={() => setIsPurchaseInterruptionOpen(false)}
+        purchases={purchases}
+        settings={settings || null}
+        estimatedRemainingPieces={inventory.estimatedRemainingStock}
+        onOpenPurchaseModal={() => {
+          setIsPurchaseInterruptionOpen(false);
+          setEditingPurchase(null);
+          setIsPurchaseModalOpen(true);
         }}
       />
 

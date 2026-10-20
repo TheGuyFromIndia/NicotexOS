@@ -10,6 +10,16 @@ export type WindowStatus = 'upcoming' | 'due' | 'overdue' | 'logged' | 'missed' 
 
 export type MealDrinkType = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'coffee' | 'tea' | 'other_drink' | 'custom';
 
+export type RetailerSource =
+  | 'Blinkit'
+  | 'Swiggy Instamart'
+  | 'BigBasket'
+  | 'Local Pharmacy'
+  | 'Other Shop'
+  | 'Other Online';
+
+export type ProductFormat = 'packet' | 'tin' | 'other';
+
 export const CONSUMPTION_REASONS = [
   'Recommended by my reduction schedule',
   'Craving or physical withdrawal',
@@ -58,6 +68,19 @@ export const CRAVING_TRIGGERS = [
 
 export type CravingTrigger = typeof CRAVING_TRIGGERS[number];
 
+export const PURCHASE_TRIGGERS = [
+  'I was stressed',
+  'I was running out',
+  'I bought it out of habit',
+  'I wanted to stockpile',
+  'Offer or discount notification',
+  'Difficult work day',
+  'Social trigger',
+  'Other reason'
+] as const;
+
+export type PurchaseTrigger = typeof PURCHASE_TRIGGERS[number];
+
 export const INTERVENTION_TYPES = [
   { id: 'breathing', label: 'Slow Breathing (4-7-8)', icon: 'Wind', desc: '4s inhale, 7s hold, 8s slow exhale' },
   { id: 'water', label: 'Drink Water', icon: 'Droplets', desc: 'Sip a full cool glass of water slowly' },
@@ -66,6 +89,15 @@ export const INTERVENTION_TYPES = [
   { id: 'surfing', label: 'Urge Surfing', icon: 'Waves', desc: 'Observe physical sensations without judging them' },
   { id: 'custom', label: 'Configured Strategy', icon: 'Compass', desc: 'Your personal calming or distraction technique' }
 ] as const;
+
+export interface FinancialMotivation {
+  id: string;
+  category: 'emi' | 'travel' | 'investment' | 'relationships' | 'health' | 'other';
+  title: string;
+  targetAmount?: number;
+  enabled: boolean;
+  order?: number;
+}
 
 export interface AppSettings {
   id: number; // 1 for singleton
@@ -99,6 +131,70 @@ export interface AppSettings {
   firstDoseDelayMinutes: number; // e.g. 30, 45, 60
   minSpacingMinutes: number; // minimum spacing between doses, e.g. 90
   usualMeals?: { type: MealDrinkType; time: string; title: string }[];
+
+  // Purchase & Financial motivation settings
+  openingStockPieces: number;
+  historicalMonthlySpendingEstimate?: number;
+  financialMotivations: FinancialMotivation[];
+  monthlyNicotexBudgetLimit?: number;
+  repeatPurchaseWindowHours: number; // default 24
+}
+
+export interface PurchaseRecord {
+  id: string;
+  timestamp: number;
+  dateStr: string; // YYYY-MM-DD
+  retailer: RetailerSource | string;
+  format: ProductFormat;
+  strength: NicotexStrength;
+  packsCount: number;
+  piecesPerPack: number;
+  pricePerPack: number;
+  deliveryCharge: number;
+  discount: number;
+  otherCharges: number;
+  totalPaid: number;
+  costPerPiece: number; // totalPaid / (packsCount * piecesPerPack)
+  receiptRef?: string;
+  notes?: string;
+
+  // Pattern detection fields
+  isRepeatPurchase?: boolean;
+  repeatHoursSinceLast?: number;
+  repeatWithPurchaseId?: string;
+  purchaseTrigger?: PurchaseTrigger | string;
+  acknowledgedRepeat?: boolean;
+
+  auditHistory?: {
+    timestamp: number;
+    action: string;
+    prevTotal?: number;
+    newTotal?: number;
+    reason?: string;
+  }[];
+}
+
+export interface PurchaseUrgeEvent {
+  id: string;
+  timestamp: number;
+  dateStr: string; // YYYY-MM-DD
+  trigger: string;
+  pauseDurationMinutes: number;
+  pauseDurationSeconds?: number;
+  alternativeTried?: string;
+  outcome: 'resisted' | 'delayed' | 'purchased' | 'still_want_to_buy';
+  estimatedCostAvoided?: number;
+  purchasedRecordId?: string;
+  notes?: string;
+}
+
+export interface InventoryAdjustment {
+  id: string;
+  timestamp: number;
+  dateStr: string; // YYYY-MM-DD
+  piecesAdjusted: number; // positive or negative
+  reason: 'lost' | 'discarded' | 'shared' | 'stock_audit' | 'other';
+  notes?: string;
 }
 
 export interface ConsumptionEvent {
@@ -115,12 +211,12 @@ export interface ConsumptionEvent {
   cravingEventId?: string;
 
   // Extended session tracking
-  plannedWindowId?: string; // links to PlannedDoseWindow if scheduled
-  startTime?: number; // epoch ms when gum started
-  stopTime?: number; // epoch ms when chewing stopped
-  sessionStatus?: SessionStatus; // 'active' | 'completed' | 'interrupted'
-  interruptionReason?: string; // e.g. "Lunch ready", "Hot beverage"
-  cravingIntensity?: number; // 1 to 10
+  plannedWindowId?: string;
+  startTime?: number;
+  stopTime?: number;
+  sessionStatus?: SessionStatus;
+  interruptionReason?: string;
+  cravingIntensity?: number;
   isUnplanned?: boolean;
 }
 
@@ -140,13 +236,13 @@ export interface CravingEvent {
 }
 
 export interface DailyWakeSession {
-  id: string; // e.g. 'wake_2026-10-20'
-  dateStr: string; // YYYY-MM-DD
-  wakeTimestamp: number; // epoch ms when actually woke up
-  wakeTime: string; // 'HH:MM'
-  targetBedtime: string; // 'HH:MM'
+  id: string;
+  dateStr: string;
+  wakeTimestamp: number;
+  wakeTime: string;
+  targetBedtime: string;
   scheduleMode: ScheduleMode;
-  firstPlannedDoseTime: string; // 'HH:MM'
+  firstPlannedDoseTime: string;
   firstPlannedDoseTimestamp: number;
   auditHistory: {
     timestamp: number;
@@ -158,24 +254,24 @@ export interface DailyWakeSession {
 }
 
 export interface PlannedDoseWindow {
-  id: string; // e.g. 'window_2026-10-20_0'
-  dateStr: string; // YYYY-MM-DD
+  id: string;
+  dateStr: string;
   windowIndex: number;
-  originalPlannedTime: string; // 'HH:MM'
-  originalPlannedTimestamp: number; // epoch ms
-  status: WindowStatus; // 'upcoming' | 'due' | 'overdue' | 'logged' | 'missed' | 'rescheduled'
+  originalPlannedTime: string;
+  originalPlannedTimestamp: number;
+  status: WindowStatus;
   actualConsumptionId?: string;
   actualConsumptionTime?: string;
   actualConsumptionTimestamp?: number;
-  delayMinutes?: number; // actual - planned in minutes
+  delayMinutes?: number;
   notes?: string;
 }
 
 export interface MealDrinkEvent {
-  id: string; // e.g. 'meal_timestamp'
-  dateStr: string; // YYYY-MM-DD
+  id: string;
+  dateStr: string;
   timestamp: number;
-  time: string; // 'HH:MM'
+  time: string;
   type: MealDrinkType;
   title: string;
   notes?: string;
@@ -186,9 +282,9 @@ export interface PlanPhase {
   planId: string;
   phaseIndex: number;
   name: string;
-  startDate: string; // YYYY-MM-DD
+  startDate: string;
   targetPiecesPerDay: number;
-  plannedWindows: string[]; // ['09:00', '13:00', ...]
+  plannedWindows: string[];
   durationDays: number;
   reviewCriteria: string;
   rationale: string;
@@ -212,7 +308,7 @@ export interface ReductionPlan {
 }
 
 export interface DailySummaryStats {
-  date: string; // YYYY-MM-DD
+  date: string;
   count: number;
   target: number;
   isCompliant: boolean;

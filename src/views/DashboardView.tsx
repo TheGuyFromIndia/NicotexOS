@@ -20,6 +20,8 @@ import { WakeUpCard } from '../components/WakeUpCard';
 import { DoseTimerCard } from '../components/DoseTimerCard';
 import { WhatShouldIDoCard } from '../components/WhatShouldIDoCard';
 import { DailyTimeline } from '../components/DailyTimeline';
+import { CostOfAddictionCard } from '../components/CostOfAddictionCard';
+import { RepeatPurchaseAlertCard } from '../components/RepeatPurchaseAlertCard';
 import type {
   AppSettings,
   ConsumptionEvent,
@@ -27,7 +29,8 @@ import type {
   ReductionPlan,
   DailyWakeSession,
   PlannedDoseWindow,
-  MealDrinkEvent
+  MealDrinkEvent,
+  PurchaseRecord
 } from '../types';
 import { getLocalDateString } from '../db';
 import {
@@ -45,11 +48,15 @@ interface DashboardViewProps {
   currentPlan: ReductionPlan | null;
   consumption: ConsumptionEvent[];
   cravings: CravingEvent[];
+  purchases: PurchaseRecord[];
   wakeSession: DailyWakeSession | null;
   plannedWindows: PlannedDoseWindow[];
   mealEvents: MealDrinkEvent[];
   onOpenLogModal: (isScheduled: boolean, targetWindow?: PlannedDoseWindow | null, existingEvent?: ConsumptionEvent | null) => void;
   onOpenCravingModal: () => void;
+  onOpenPurchaseModal: (purchase?: PurchaseRecord) => void;
+  onOpenInterruptionModal: () => void;
+  onNavigateToSpending: () => void;
   onQuickLog: () => void;
   onNavigateToPlan: () => void;
   onOpenMealModal: () => void;
@@ -61,11 +68,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   currentPlan,
   consumption,
   cravings,
+  purchases,
   wakeSession,
   plannedWindows,
   mealEvents,
   onOpenLogModal,
   onOpenCravingModal,
+  onOpenPurchaseModal,
+  onOpenInterruptionModal,
+  onNavigateToSpending,
   onQuickLog,
   onNavigateToPlan,
   onOpenMealModal,
@@ -73,6 +84,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const todayStr = getLocalDateString();
   const [now, setNow] = useState<number>(Date.now());
+
+  // Check for recent repeat purchase that has not been acknowledged
+  const unacknowledgedRepeat = purchases
+    .filter(p => p.isRepeatPurchase && !p.acknowledgedRepeat)
+    .sort((a, b) => b.timestamp - a.timestamp)[0];
 
   // Update timer live every 15 seconds
   useEffect(() => {
@@ -155,6 +171,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Repeat Purchase Contextual Alert (if unacknowledged rapid order detected) */}
+      {unacknowledgedRepeat && (
+        <RepeatPurchaseAlertCard
+          recentRepeatPurchase={unacknowledgedRepeat}
+          motivations={settings?.financialMotivations || []}
+          onAcknowledged={() => {}}
+        />
+      )}
+
+      {/* Prominent "The Cost of Nicotex" Section */}
+      <CostOfAddictionCard
+        purchases={purchases}
+        consumptionEvents={consumption}
+        settings={settings}
+        onOpenPurchaseModal={() => onOpenPurchaseModal()}
+        onOpenInterruptionModal={onOpenInterruptionModal}
+        onNavigateToSpending={onNavigateToSpending}
+      />
 
       {/* 1. Wake-Up Card / Start of Day Workflow */}
       <WakeUpCard
@@ -304,60 +339,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </Card>
       </div>
 
-      {/* 8. Financial Expenditure Card */}
-      <Card className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className="w-7 h-7 rounded-lg bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
-              <span className="font-bold text-xs">{currency}</span>
-            </div>
-            <h3 className="text-sm font-bold text-slate-200">Financial Expenditure</h3>
-          </div>
-          <span className="text-xs text-slate-400 font-mono">
-            {currency}{costPerPiece}/piece
-          </span>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2 text-center pt-1">
-          <div className="p-2.5 rounded-2xl bg-slate-800/40 border border-slate-800">
-            <span className="text-[10px] text-slate-400 block">Today</span>
-            <span className="text-sm font-bold text-slate-100 font-mono">
-              {currency}{spentToday}
-            </span>
-          </div>
-
-          <div className="p-2.5 rounded-2xl bg-slate-800/40 border border-slate-800">
-            <span className="text-[10px] text-slate-400 block">Monthly Rate</span>
-            <span className="text-sm font-bold text-slate-100 font-mono">
-              {currency}{estimatedMonthlySpending}
-            </span>
-          </div>
-
-          <div className="p-2.5 rounded-2xl bg-slate-800/40 border border-slate-800">
-            <span className="text-[10px] text-slate-400 block">All-Time</span>
-            <span className="text-sm font-bold text-slate-100 font-mono">
-              {currency}{totalSpentAllTime}
-            </span>
-          </div>
-        </div>
-
-        {/* Avoided expenditure estimate */}
-        <div className="p-3 rounded-2xl bg-emerald-950/20 border border-emerald-900/40 flex items-center justify-between">
-          <div className="space-y-0.5">
-            <span className="text-xs font-semibold text-emerald-300 block">
-              Estimated Avoided Expenditure:
-            </span>
-            <span className="text-[10px] text-slate-400 block">
-              Based on {avoidedStats.piecesSaved} pieces avoided vs baseline estimate
-            </span>
-          </div>
-          <span className="text-base font-extrabold text-emerald-400 font-mono">
-            ~{currency}{avoidedStats.avoidedAmount}
-          </span>
-        </div>
-      </Card>
-
-      {/* 9. Reduction Plan Snapshot */}
+      {/* Reduction Plan Snapshot */}
       <Card
         interactive
         onClick={onNavigateToPlan}

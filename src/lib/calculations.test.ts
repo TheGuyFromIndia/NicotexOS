@@ -17,7 +17,11 @@ import {
   calculateDoseTimers,
   checkSpacingConstraint,
   checkFoodDrinkConflict,
-  buildDailyTimeline
+  buildDailyTimeline,
+  formatINR,
+  calculatePurchaseFinancials,
+  detectRepeatPurchase,
+  calculateInventoryStatus
 } from './calculations';
 import type {
   ConsumptionEvent,
@@ -25,7 +29,8 @@ import type {
   AppSettings,
   PlannedDoseWindow,
   DailyWakeSession,
-  MealDrinkEvent
+  MealDrinkEvent,
+  PurchaseRecord
 } from '../types';
 
 describe('Calculations & Business Logic', () => {
@@ -204,5 +209,194 @@ describe('Calculations & Business Logic', () => {
     expect(timeline.length).toBe(1);
     expect(timeline[0].statusBadge?.label).toBe('Interrupted');
     expect(timeline[0].subtitle).toContain('Stopped Early');
+  });
+
+  describe('Financial & Purchase Tracking Calculations', () => {
+    it('formats numbers in Indian Rupees (INR) with standard commas', () => {
+      expect(formatINR(0)).toBe('₹0');
+      expect(formatINR(482)).toBe('₹482');
+      expect(formatINR(3500)).toBe('₹3,500');
+      expect(formatINR(25000)).toBe('₹25,000');
+      expect(formatINR(125000)).toBe('₹1,25,000');
+    });
+
+    it('calculates purchase financials, cost per piece, and delivery fee metrics', () => {
+      const now = new Date(2026, 9, 20, 15, 0, 0).getTime();
+      const purchases: PurchaseRecord[] = [
+        {
+          id: 'p1',
+          timestamp: now - 3 * 86400000, // 3 days ago
+          dateStr: '2026-10-17',
+          retailer: 'Blinkit',
+          format: 'tin',
+          strength: '2mg',
+          packsCount: 1,
+          piecesPerPack: 29,
+          pricePerPack: 200,
+          deliveryCharge: 28,
+          discount: 0,
+          otherCharges: 0,
+          totalPaid: 228,
+          costPerPiece: 7.86
+        },
+        {
+          id: 'p2',
+          timestamp: now - 3600000, // 1 hour ago (today)
+          dateStr: '2026-10-20',
+          retailer: 'Swiggy Instamart',
+          format: 'tin',
+          strength: '2mg',
+          packsCount: 1,
+          piecesPerPack: 29,
+          pricePerPack: 215,
+          deliveryCharge: 39,
+          discount: 0,
+          otherCharges: 0,
+          totalPaid: 254,
+          costPerPiece: 8.76
+        }
+      ];
+
+      const financials = calculatePurchaseFinancials(purchases, 3500, now);
+      expect(financials.totalSpentAllTime).toBe(482);
+      expect(financials.spentToday).toBe(254);
+      expect(financials.spentLast7Days).toBe(482);
+      expect(financials.spentLast30Days).toBe(482);
+      expect(financials.totalPiecesPurchased).toBe(58);
+      expect(financials.totalDeliveryFees).toBe(67);
+      expect(financials.avgCostPerPiece).toBe(8.31); // 482 / 58
+      expect(financials.spendingByRetailer.length).toBe(2);
+    });
+
+    it('detects repeat purchase across midnight using elapsed hours (17h between 8 AM and 1 AM)', () => {
+      // Scenario from requirements: 8:00 AM on Day 1 Blinkit, then 1:00 AM on Day 2 Swiggy Instamart
+      const day1_8am = new Date(2026, 9, 20, 8, 0, 0).getTime();
+      const day2_1am = new Date(2026, 9, 21, 1, 0, 0).getTime();
+
+      const elapsedHours = (day2_1am - day1_8am) / (1000 * 60 * 60);
+      expect(elapsedHours).toBe(17);
+
+      const previousPurchases: PurchaseRecord[] = [
+        {
+          id: 'order_day1',
+          timestamp: day1_8am,
+          dateStr: '2026-10-20',
+          retailer: 'Blinkit',
+          format: 'tin',
+          strength: '2mg',
+          packsCount: 1,
+          piecesPerPack: 29,
+          pricePerPack: 200,
+          deliveryCharge: 28,
+          discount: 0,
+          otherCharges: 0,
+          totalPaid: 228,
+          costPerPiece: 7.86
+        }
+      ];
+
+      const repeatCheck = detectRepeatPurchase(day2_1am, previousPurchases, 24);
+      expect(repeatCheck.isRepeat).toBe(true);
+      expect(repeatCheck.hoursSinceLast).toBe(17);
+      expect(repeatCheck.prevPurchase?.id).toBe('order_day1');
+
+      // Combined total for the two orders across midnight: ₹482 for 58 pieces
+      const totalAmountPaid = 228 + 254;
+      const totalPieces = 29 + 29;
+      expect(totalAmountPaid).toBe(482);
+      expect(totalPieces).toBe(58);
+    });
+
+    it('does not flag repeat purchases if interval exceeds the configured window (e.g. 26 hours)', () => {
+      const time1 = new Date(2026, 9, 20, 8, 0, 0).getTime();
+      const time2 = new Date(2026, 9, 21, 10, 0, 0).getTime(); // 26 hours later
+
+      const previousPurchases: PurchaseRecord[] = [
+        {
+          id: 'order_1',
+          timestamp: time1,
+          dateStr: '2026-10-20',
+          retailer: 'Local Pharmacy',
+          format: 'packet',
+          strength: '2mg',
+          packsCount: 1,
+          piecesPerPack: 9,
+          pricePerPack: 115,
+          deliveryCharge: 0,
+          discount: 0,
+          otherCharges: 0,
+          totalPaid: 115,
+          costPerPiece: 12.78
+        }
+      ];
+
+      const repeatCheck = detectRepeatPurchase(time2, previousPurchases, 24);
+      expect(repeatCheck.isRepeat).toBe(false);
+      expect(repeatCheck.hoursSinceLast).toBe(26);
+    });
+
+    it('maintains strict separation between inventory and consumption', () => {
+      const purchases: PurchaseRecord[] = [
+        {
+          id: 'p1',
+          timestamp: 1000,
+          dateStr: '2026-10-20',
+          retailer: 'Blinkit',
+          format: 'tin',
+          strength: '2mg',
+          packsCount: 1,
+          piecesPerPack: 29,
+          pricePerPack: 200,
+          deliveryCharge: 28,
+          discount: 0,
+          otherCharges: 0,
+          totalPaid: 228,
+          costPerPiece: 7.86
+        }
+      ];
+
+      const consumption: ConsumptionEvent[] = [
+        {
+          id: 'c1',
+          timestamp: 2000,
+          localDateStr: '2026-10-20',
+          product: 'Nicotex',
+          strength: '2mg',
+          quantity: 4,
+          trigger: 'Habit',
+          contextualFactors: [],
+          isScheduled: true
+        }
+      ];
+
+      // Opening stock 5 + 29 purchased - 4 consumed = 30 remaining
+      const inventory = calculateInventoryStatus(purchases, consumption, 5);
+      expect(inventory.openingStock).toBe(5);
+      expect(inventory.totalPiecesPurchased).toBe(29);
+      expect(inventory.totalPiecesConsumed).toBe(4);
+      expect(inventory.estimatedRemainingStock).toBe(30);
+      expect(inventory.isUncertain).toBe(false);
+    });
+
+    it('flags inventory uncertainty when pieces were consumed with zero opening stock and no purchase history', () => {
+      const consumption: ConsumptionEvent[] = [
+        {
+          id: 'c1',
+          timestamp: 2000,
+          localDateStr: '2026-10-20',
+          product: 'Nicotex',
+          strength: '2mg',
+          quantity: 3,
+          trigger: 'Habit',
+          contextualFactors: [],
+          isScheduled: true
+        }
+      ];
+
+      // No purchases and 0 opening stock
+      const inventory = calculateInventoryStatus([], consumption, 0);
+      expect(inventory.estimatedRemainingStock).toBe(0);
+      expect(inventory.isUncertain).toBe(true);
+    });
   });
 });

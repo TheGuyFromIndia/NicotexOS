@@ -6,7 +6,10 @@ import type {
   ReductionPlan,
   DailyWakeSession,
   PlannedDoseWindow,
-  MealDrinkEvent
+  MealDrinkEvent,
+  PurchaseRecord,
+  PurchaseUrgeEvent,
+  InventoryAdjustment
 } from '../types';
 
 export class NicotexDatabase extends Dexie {
@@ -17,6 +20,9 @@ export class NicotexDatabase extends Dexie {
   wakeSessions!: EntityTable<DailyWakeSession, 'id'>;
   plannedWindows!: EntityTable<PlannedDoseWindow, 'id'>;
   mealEvents!: EntityTable<MealDrinkEvent, 'id'>;
+  purchases!: EntityTable<PurchaseRecord, 'id'>;
+  purchaseUrges!: EntityTable<PurchaseUrgeEvent, 'id'>;
+  inventoryAdjustments!: EntityTable<InventoryAdjustment, 'id'>;
 
   constructor() {
     super('NicotexOS_DB');
@@ -38,6 +44,20 @@ export class NicotexDatabase extends Dexie {
       wakeSessions: 'id, dateStr, wakeTimestamp',
       plannedWindows: 'id, dateStr, originalPlannedTimestamp, status, actualConsumptionId',
       mealEvents: 'id, dateStr, timestamp, type'
+    });
+
+    // Version 3: Added purchases, purchaseUrges, inventoryAdjustments
+    this.version(3).stores({
+      settings: 'id',
+      consumption: 'id, timestamp, localDateStr, trigger, isScheduled, cravingEventId, plannedWindowId, sessionStatus',
+      cravings: 'id, timestamp, localDateStr, trigger, outcome, consumedNicotex',
+      plans: 'id, status, createdAt',
+      wakeSessions: 'id, dateStr, wakeTimestamp',
+      plannedWindows: 'id, dateStr, originalPlannedTimestamp, status, actualConsumptionId',
+      mealEvents: 'id, dateStr, timestamp, type',
+      purchases: 'id, timestamp, dateStr, retailer, strength, totalPaid, isRepeatPurchase',
+      purchaseUrges: 'id, timestamp, dateStr, trigger, outcome',
+      inventoryAdjustments: 'id, timestamp, dateStr, reason'
     });
   }
 }
@@ -77,6 +97,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { type: 'lunch', time: '13:00', title: 'Lunch' },
     { type: 'tea', time: '17:00', title: 'Evening Tea' },
     { type: 'dinner', time: '20:30', title: 'Dinner' }
+  ],
+
+  // Financial Motivations & Inventory
+  openingStockPieces: 0,
+  historicalMonthlySpendingEstimate: 3500,
+  repeatPurchaseWindowHours: 24,
+  monthlyNicotexBudgetLimit: 3000,
+  financialMotivations: [
+    { id: 'mot_emi', category: 'emi', title: 'Staying ahead of monthly EMI commitments', targetAmount: 25000, enabled: true, order: 1 },
+    { id: 'mot_travel', category: 'travel', title: 'Building a travel & vacation fund', targetAmount: 50000, enabled: true, order: 2 },
+    { id: 'mot_invest', category: 'investment', title: 'Investing in long-term wealth & mutual funds', targetAmount: 15000, enabled: true, order: 3 },
+    { id: 'mot_loved_ones', category: 'relationships', title: 'Being fully present for myself and loved ones', enabled: true, order: 4 },
+    { id: 'mot_health', category: 'health', title: 'Freedom from chemical oral dependence & anxiety', enabled: true, order: 5 }
   ]
 };
 
@@ -86,8 +119,8 @@ export async function getSettings(): Promise<AppSettings> {
     await db.settings.put(DEFAULT_SETTINGS);
     return DEFAULT_SETTINGS;
   }
-  // Backfill any newly added fields for existing records
-  if (!existing.scheduleMode) {
+  // Backfill any newly added fields
+  if (!existing.financialMotivations || existing.openingStockPieces === undefined) {
     const upgraded = { ...DEFAULT_SETTINGS, ...existing };
     await db.settings.put(upgraded);
     return upgraded;
@@ -120,19 +153,33 @@ export function getLocalDateString(date: Date = new Date()): string {
  * Export full IndexedDB dataset as JSON string
  */
 export async function exportDatabaseToJSON(): Promise<string> {
-  const [settings, consumption, cravings, plans, wakeSessions, plannedWindows, mealEvents] = await Promise.all([
+  const [
+    settings,
+    consumption,
+    cravings,
+    plans,
+    wakeSessions,
+    plannedWindows,
+    mealEvents,
+    purchases,
+    purchaseUrges,
+    inventoryAdjustments
+  ] = await Promise.all([
     db.settings.toArray(),
     db.consumption.orderBy('timestamp').toArray(),
     db.cravings.orderBy('timestamp').toArray(),
     db.plans.toArray(),
     db.wakeSessions.toArray(),
     db.plannedWindows.toArray(),
-    db.mealEvents.toArray()
+    db.mealEvents.toArray(),
+    db.purchases.orderBy('timestamp').toArray(),
+    db.purchaseUrges.orderBy('timestamp').toArray(),
+    db.inventoryAdjustments.orderBy('timestamp').toArray()
   ]);
 
   const payload = {
     app: 'NicotexOS',
-    version: '2.0.0',
+    version: '3.0.0',
     exportTimestamp: Date.now(),
     exportDateFormatted: new Date().toISOString(),
     data: {
@@ -142,7 +189,10 @@ export async function exportDatabaseToJSON(): Promise<string> {
       plans,
       wakeSessions,
       plannedWindows,
-      mealEvents
+      mealEvents,
+      purchases,
+      purchaseUrges,
+      inventoryAdjustments
     }
   };
 
@@ -210,6 +260,44 @@ export async function exportCravingsToCSV(): Promise<string> {
   return [headers.join(','), ...rows].join('\n');
 }
 
+export async function exportPurchasesToCSV(): Promise<string> {
+  const items = await db.purchases.orderBy('timestamp').toArray();
+  const headers = [
+    'ID', 'Date', 'Time', 'Retailer', 'Format', 'Strength',
+    'Packs', 'PiecesPerPack', 'PricePerPack', 'DeliveryCharge',
+    'Discount', 'OtherCharges', 'TotalPaid', 'CostPerPiece',
+    'IsRepeatPurchase', 'RepeatHoursSinceLast', 'PurchaseTrigger', 'Notes'
+  ];
+  const rows = items.map(p => {
+    const d = new Date(p.timestamp);
+    const dateStr = d.toLocaleDateString();
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const clean = (str: string = '') => `"${(str || '').replace(/"/g, '""')}"`;
+    return [
+      p.id,
+      dateStr,
+      timeStr,
+      clean(p.retailer),
+      p.format,
+      p.strength,
+      p.packsCount,
+      p.piecesPerPack,
+      p.pricePerPack,
+      p.deliveryCharge,
+      p.discount,
+      p.otherCharges,
+      p.totalPaid,
+      p.costPerPiece,
+      p.isRepeatPurchase ? 'Yes' : 'No',
+      p.repeatHoursSinceLast ?? '',
+      clean(p.purchaseTrigger || ''),
+      clean(p.notes || '')
+    ].join(',');
+  });
+
+  return [headers.join(','), ...rows].join('\n');
+}
+
 /**
  * Restore database from JSON
  */
@@ -220,7 +308,18 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<{ succ
       return { success: false, message: 'Invalid Nicotex backup file format.', count: 0 };
     }
 
-    const { settings, consumption, cravings, plans, wakeSessions, plannedWindows, mealEvents } = parsed.data;
+    const {
+      settings,
+      consumption,
+      cravings,
+      plans,
+      wakeSessions,
+      plannedWindows,
+      mealEvents,
+      purchases,
+      purchaseUrges,
+      inventoryAdjustments
+    } = parsed.data;
 
     await db.transaction('rw', [
       db.settings,
@@ -229,7 +328,10 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<{ succ
       db.plans,
       db.wakeSessions,
       db.plannedWindows,
-      db.mealEvents
+      db.mealEvents,
+      db.purchases,
+      db.purchaseUrges,
+      db.inventoryAdjustments
     ], async () => {
       if (Array.isArray(settings) && settings.length > 0) {
         await db.settings.clear();
@@ -271,9 +373,32 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<{ succ
           await db.mealEvents.bulkPut(mealEvents);
         }
       }
+      if (Array.isArray(purchases)) {
+        await db.purchases.clear();
+        if (purchases.length > 0) {
+          await db.purchases.bulkPut(purchases);
+        }
+      }
+      if (Array.isArray(purchaseUrges)) {
+        await db.purchaseUrges.clear();
+        if (purchaseUrges.length > 0) {
+          await db.purchaseUrges.bulkPut(purchaseUrges);
+        }
+      }
+      if (Array.isArray(inventoryAdjustments)) {
+        await db.inventoryAdjustments.clear();
+        if (inventoryAdjustments.length > 0) {
+          await db.inventoryAdjustments.bulkPut(inventoryAdjustments);
+        }
+      }
     });
 
-    const totalEvents = (consumption?.length || 0) + (cravings?.length || 0) + (plannedWindows?.length || 0);
+    const totalEvents =
+      (consumption?.length || 0) +
+      (cravings?.length || 0) +
+      (purchases?.length || 0) +
+      (plannedWindows?.length || 0);
+
     return { success: true, message: `Successfully restored ${totalEvents} records!`, count: totalEvents };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -292,7 +417,10 @@ export async function clearAllDatabaseData(): Promise<void> {
     db.plans,
     db.wakeSessions,
     db.plannedWindows,
-    db.mealEvents
+    db.mealEvents,
+    db.purchases,
+    db.purchaseUrges,
+    db.inventoryAdjustments
   ], async () => {
     await db.settings.clear();
     await db.consumption.clear();
@@ -301,6 +429,9 @@ export async function clearAllDatabaseData(): Promise<void> {
     await db.wakeSessions.clear();
     await db.plannedWindows.clear();
     await db.mealEvents.clear();
+    await db.purchases.clear();
+    await db.purchaseUrges.clear();
+    await db.inventoryAdjustments.clear();
     await db.settings.put(DEFAULT_SETTINGS);
   });
 }

@@ -7,6 +7,7 @@ import {
   exportDatabaseToJSON,
   exportConsumptionToCSV,
   exportCravingsToCSV,
+  exportPurchasesToCSV,
   importDatabaseFromJSON,
   clearAllDatabaseData,
   getLocalDateString
@@ -16,7 +17,9 @@ import type {
   CravingEvent,
   DailyWakeSession,
   PlannedDoseWindow,
-  MealDrinkEvent
+  MealDrinkEvent,
+  PurchaseRecord,
+  PurchaseUrgeEvent
 } from '../types';
 
 describe('IndexedDB Persistence & Data Operations', () => {
@@ -195,6 +198,65 @@ describe('IndexedDB Persistence & Data Operations', () => {
     expect(csv).toContain('Session Status');
     expect(csv).toContain('Work or concentration');
     expect(csv).toContain('Deadline sprint');
+  });
+
+  it('records purchases and exports them to CSV with complete breakdown', async () => {
+    const purchase: PurchaseRecord = {
+      id: 'purch_test_1',
+      timestamp: 1700000000000,
+      dateStr: '2026-10-20',
+      retailer: 'Blinkit',
+      format: 'tin',
+      strength: '2mg',
+      packsCount: 1,
+      piecesPerPack: 29,
+      pricePerPack: 200,
+      deliveryCharge: 28,
+      discount: 0,
+      otherCharges: 0,
+      totalPaid: 228,
+      costPerPiece: 7.86,
+      isRepeatPurchase: true,
+      repeatHoursSinceLast: 17,
+      purchaseTrigger: 'I was stressed',
+      notes: 'Late night order'
+    };
+
+    await db.purchases.put(purchase);
+    const retrieved = await db.purchases.get('purch_test_1');
+    expect(retrieved).toBeDefined();
+    expect(retrieved?.retailer).toBe('Blinkit');
+    expect(retrieved?.totalPaid).toBe(228);
+    expect(retrieved?.costPerPiece).toBe(7.86);
+    expect(retrieved?.isRepeatPurchase).toBe(true);
+
+    const csv = await exportPurchasesToCSV();
+    expect(csv).toContain('Retailer');
+    expect(csv).toContain('TotalPaid');
+    expect(csv).toContain('CostPerPiece');
+    expect(csv).toContain('Blinkit');
+    expect(csv).toContain('228');
+    expect(csv).toContain('Late night order');
+  });
+
+  it('records purchase urge pause events with outcome and alternatives', async () => {
+    const urge: PurchaseUrgeEvent = {
+      id: 'urge_test_1',
+      timestamp: 1700000000000,
+      dateStr: '2026-10-20',
+      trigger: 'I feel stressed or anxious',
+      pauseDurationMinutes: 5,
+      pauseDurationSeconds: 300,
+      alternativeTried: 'Drink a cold glass of water slowly',
+      outcome: 'resisted',
+      notes: 'Paused for 5m and craving subsided'
+    };
+
+    await db.purchaseUrges.put(urge);
+    const retrieved = await db.purchaseUrges.get('urge_test_1');
+    expect(retrieved?.trigger).toBe('I feel stressed or anxious');
+    expect(retrieved?.outcome).toBe('resisted');
+    expect(retrieved?.pauseDurationSeconds).toBe(300);
   });
 
   it('formats local date string consistently', () => {
