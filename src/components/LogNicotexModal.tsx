@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Check, Clock, AlertCircle } from 'lucide-react';
+import { Plus, Check, Clock, AlertTriangle, AlertCircle, Sparkles } from 'lucide-react';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import {
@@ -8,7 +8,9 @@ import {
   type ConsumptionReason,
   type ContextualFactor,
   type NicotexStrength,
-  type ConsumptionEvent
+  type ConsumptionEvent,
+  type PlannedDoseWindow,
+  type SessionStatus
 } from '../types';
 import { db, getLocalDateString } from '../db';
 
@@ -17,6 +19,8 @@ interface LogNicotexModalProps {
   onClose: () => void;
   defaultStrength?: NicotexStrength;
   existingEvent?: ConsumptionEvent | null;
+  targetWindow?: PlannedDoseWindow | null;
+  isScheduledDefault?: boolean;
   onSaved?: () => void;
 }
 
@@ -25,16 +29,23 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
   onClose,
   defaultStrength = '2mg',
   existingEvent = null,
+  targetWindow = null,
+  isScheduledDefault = false,
   onSaved
 }) => {
   const [strength, setStrength] = useState<NicotexStrength>(defaultStrength);
   const [quantity, setQuantity] = useState<number>(1);
-  const [trigger, setTrigger] = useState<ConsumptionReason | string>(CONSUMPTION_REASONS[7]); // Habit / automatic
+  const [isScheduled, setIsScheduled] = useState<boolean>(isScheduledDefault);
+  const [trigger, setTrigger] = useState<ConsumptionReason | string>(
+    isScheduledDefault ? CONSUMPTION_REASONS[0] : CONSUMPTION_REASONS[1]
+  );
   const [customTrigger, setCustomTrigger] = useState<string>('');
   const [contextualFactors, setContextualFactors] = useState<string[]>([]);
-  const [isScheduled, setIsScheduled] = useState<boolean>(false);
   const [notes, setNotes] = useState<string>('');
   const [customTime, setCustomTime] = useState<string>('');
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>('completed');
+  const [interruptionReason, setInterruptionReason] = useState<string>('');
+  const [cravingIntensity, setCravingIntensity] = useState<number>(5);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
@@ -50,21 +61,28 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
       }
       setContextualFactors(existingEvent.contextualFactors || []);
       setIsScheduled(existingEvent.isScheduled);
+      setSessionStatus(existingEvent.sessionStatus || 'completed');
+      setInterruptionReason(existingEvent.interruptionReason || '');
+      setCravingIntensity(existingEvent.cravingIntensity ?? 5);
       setNotes(existingEvent.notes || '');
-      const d = new Date(existingEvent.timestamp);
+      const d = new Date(existingEvent.startTime || existingEvent.timestamp);
       setCustomTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
     } else {
       setStrength(defaultStrength);
       setQuantity(1);
-      setTrigger(CONSUMPTION_REASONS[7]);
+      const scheduledMode = targetWindow ? true : isScheduledDefault;
+      setIsScheduled(scheduledMode);
+      setTrigger(scheduledMode ? CONSUMPTION_REASONS[0] : CONSUMPTION_REASONS[1]);
       setCustomTrigger('');
       setContextualFactors([]);
-      setIsScheduled(false);
+      setSessionStatus('completed');
+      setInterruptionReason('');
+      setCravingIntensity(5);
       setNotes('');
       const d = new Date();
       setCustomTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
     }
-  }, [isOpen, existingEvent, defaultStrength]);
+  }, [isOpen, existingEvent, defaultStrength, targetWindow, isScheduledDefault]);
 
   const toggleFactor = (f: ContextualFactor) => {
     setContextualFactors(prev =>
@@ -73,14 +91,13 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
   };
 
   const handleSave = async () => {
-    if (isSubmitting) return; // Prevent duplicate taps
+    if (isSubmitting) return;
     setIsSubmitting(true);
 
     try {
       const now = new Date();
       let eventTimestamp = existingEvent ? existingEvent.timestamp : now.getTime();
 
-      // Adjust timestamp if time input was changed
       if (customTime) {
         const [h, m] = customTime.split(':').map(Number);
         const adjustedDate = new Date(eventTimestamp);
@@ -89,22 +106,47 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
       }
 
       const finalTrigger = trigger === 'Other' && customTrigger.trim() ? customTrigger.trim() : trigger;
+      const todayStr = getLocalDateString(new Date(eventTimestamp));
+
+      const recordId = existingEvent ? existingEvent.id : `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
       const record: ConsumptionEvent = {
-        id: existingEvent ? existingEvent.id : `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        id: recordId,
         timestamp: eventTimestamp,
-        localDateStr: getLocalDateString(new Date(eventTimestamp)),
+        localDateStr: todayStr,
         product: 'Nicotex',
         strength,
         quantity: Math.max(1, quantity),
         trigger: finalTrigger,
         contextualFactors,
         isScheduled,
+        isUnplanned: !isScheduled,
+        sessionStatus,
+        interruptionReason: sessionStatus === 'interrupted' ? interruptionReason.trim() : undefined,
+        cravingIntensity: !isScheduled ? cravingIntensity : undefined,
+        startTime: eventTimestamp,
+        stopTime: sessionStatus === 'completed' ? eventTimestamp + 30 * 60000 : undefined,
         notes: notes.trim() || undefined,
-        cravingEventId: existingEvent?.cravingEventId
+        cravingEventId: existingEvent?.cravingEventId,
+        plannedWindowId: targetWindow ? targetWindow.id : existingEvent?.plannedWindowId
       };
 
-      await db.consumption.put(record);
+      await db.transaction('rw', [db.consumption, db.plannedWindows], async () => {
+        await db.consumption.put(record);
+
+        // If linked to a planned window, update the window's status
+        if (targetWindow) {
+          const delayMinutes = Math.floor((eventTimestamp - targetWindow.originalPlannedTimestamp) / 60000);
+          await db.plannedWindows.update(targetWindow.id, {
+            status: 'logged',
+            actualConsumptionId: recordId,
+            actualConsumptionTimestamp: eventTimestamp,
+            actualConsumptionTime: customTime,
+            delayMinutes: Math.max(0, delayMinutes)
+          });
+        }
+      });
+
       onSaved?.();
       onClose();
     } catch (err) {
@@ -117,7 +159,18 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
   const handleDelete = async () => {
     if (!existingEvent) return;
     if (confirm('Delete this recorded piece?')) {
-      await db.consumption.delete(existingEvent.id);
+      await db.transaction('rw', [db.consumption, db.plannedWindows], async () => {
+        await db.consumption.delete(existingEvent.id);
+        if (existingEvent.plannedWindowId) {
+          await db.plannedWindows.update(existingEvent.plannedWindowId, {
+            status: 'upcoming',
+            actualConsumptionId: undefined,
+            actualConsumptionTime: undefined,
+            actualConsumptionTimestamp: undefined,
+            delayMinutes: undefined
+          });
+        }
+      });
       onSaved?.();
       onClose();
     }
@@ -127,13 +180,52 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={existingEvent ? 'Edit Logged Piece' : 'Log Nicotex Piece'}
+      title={existingEvent ? 'Edit Logged Piece' : isScheduled ? 'Log Scheduled Dose' : 'Log Unplanned Dose'}
     >
-      <div className="space-y-5">
-        {/* Strength & Quantity */}
+      <div className="space-y-4">
+        {/* Scheduled vs Unplanned Mode Toggle */}
+        <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-slate-800/80 border border-slate-700/60">
+          <button
+            type="button"
+            onClick={() => {
+              setIsScheduled(true);
+              setTrigger(CONSUMPTION_REASONS[0]);
+            }}
+            className={`py-2 text-xs font-bold rounded-xl transition-all ${
+              isScheduled
+                ? 'bg-cyan-500 text-slate-950 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Scheduled Dose
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIsScheduled(false);
+              setTrigger(CONSUMPTION_REASONS[1]);
+            }}
+            className={`py-2 text-xs font-bold rounded-xl transition-all ${
+              !isScheduled
+                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Unplanned Piece
+          </button>
+        </div>
+
+        {targetWindow && (
+          <div className="p-3 rounded-2xl bg-cyan-950/30 border border-cyan-800/40 text-xs text-cyan-200 flex items-center justify-between">
+            <span>Linked to Window #{targetWindow.windowIndex + 1} ({targetWindow.originalPlannedTime})</span>
+            <span className="text-[10px] text-cyan-400 font-bold uppercase">Scheduled</span>
+          </div>
+        )}
+
+        {/* Strength & Time */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">Strength</label>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Strength</label>
             <div className="flex rounded-xl bg-slate-800 p-1 border border-slate-700/80">
               {(['2mg', '4mg'] as NicotexStrength[]).map(s => (
                 <button
@@ -153,76 +245,75 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">Quantity</label>
-            <div className="flex items-center justify-between rounded-xl bg-slate-800 px-3 py-1 border border-slate-700/80">
-              <button
-                type="button"
-                onClick={() => setQuantity(q => Math.max(1, q - 1))}
-                className="w-7 h-7 rounded-lg bg-slate-700 text-slate-200 font-bold flex items-center justify-center active:scale-95"
-              >
-                -
-              </button>
-              <span className="text-sm font-bold text-slate-100">{quantity}</span>
-              <button
-                type="button"
-                onClick={() => setQuantity(q => q + 1)}
-                className="w-7 h-7 rounded-lg bg-slate-700 text-slate-200 font-bold flex items-center justify-center active:scale-95"
-              >
-                +
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Time & Scheduled status */}
-        <div className="grid grid-cols-2 gap-3 items-center">
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1.5">Time Logged</label>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Start Time</label>
             <input
               type="time"
               value={customTime}
               onChange={e => setCustomTime(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
             />
           </div>
+        </div>
 
-          <div className="pt-5">
-            <button
-              type="button"
-              onClick={() => setIsScheduled(!isScheduled)}
-              className={`w-full py-2.5 px-3 rounded-xl border text-xs font-semibold transition-all flex items-center justify-center space-x-1.5 ${
-                isScheduled
-                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                  : 'bg-slate-800/60 border-slate-700/60 text-slate-400'
-              }`}
-            >
-              {isScheduled && <Check size={14} />}
-              <span>{isScheduled ? 'Scheduled Window' : 'Unplanned Piece'}</span>
-            </button>
+        {/* Session Status: Completed normally vs Stopped Early vs Active */}
+        <div>
+          <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+            Session Status:
+          </label>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { id: 'completed' as SessionStatus, label: 'Completed (~30m)' },
+              { id: 'interrupted' as SessionStatus, label: 'Stopped Early' },
+              { id: 'active' as SessionStatus, label: 'Chewing Now' }
+            ].map(item => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setSessionStatus(item.id)}
+                className={`py-2 px-1 text-center text-[11px] rounded-xl border transition-all leading-tight ${
+                  sessionStatus === item.id
+                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 font-bold'
+                    : 'bg-slate-800/40 border-slate-700/60 text-slate-400'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
+
+          {sessionStatus === 'interrupted' && (
+            <div className="mt-2.5 p-3 rounded-2xl bg-amber-950/20 border border-amber-800/40 space-y-2">
+              <label className="text-[11px] font-semibold text-amber-300 block">
+                Why was the session stopped early?
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Lunch ready, hot coffee, phone call..."
+                value={interruptionReason}
+                onChange={e => setInterruptionReason(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
+              />
+              <p className="text-[10px] text-slate-400 italic">
+                * Note: This piece still counts toward today's total. Do not take an extra piece or double up to compensate.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Reason / Trigger selection */}
         <div>
-          <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-            What triggered this piece?
+          <label className="text-xs font-semibold text-slate-300 block mb-1">
+            Reason / Cue:
           </label>
-          <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto no-scrollbar pr-1">
+          <select
+            value={trigger}
+            onChange={e => setTrigger(e.target.value)}
+            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
+          >
             {CONSUMPTION_REASONS.map(r => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => setTrigger(r)}
-                className={`py-2 px-2.5 rounded-xl text-left text-xs transition-all border leading-snug truncate ${
-                  trigger === r
-                    ? 'bg-cyan-500/20 border-cyan-400 text-cyan-300 font-semibold'
-                    : 'bg-slate-800/40 border-slate-800 hover:bg-slate-800 text-slate-300'
-                }`}
-              >
-                {r}
-              </button>
+              <option key={r} value={r}>{r}</option>
             ))}
-          </div>
+          </select>
 
           {trigger === 'Other' && (
             <input
@@ -235,10 +326,28 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
           )}
         </div>
 
+        {/* Craving Intensity (if unplanned) */}
+        {!isScheduled && (
+          <div className="p-3 rounded-2xl bg-slate-800/40 border border-slate-800 space-y-1">
+            <div className="flex justify-between items-center text-xs">
+              <span className="text-slate-300 font-semibold">Craving Intensity:</span>
+              <span className="text-amber-400 font-bold">{cravingIntensity}/10</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="10"
+              value={cravingIntensity}
+              onChange={e => setCravingIntensity(Number(e.target.value))}
+              className="w-full accent-amber-400 h-1.5 bg-slate-700 rounded-lg cursor-pointer"
+            />
+          </div>
+        )}
+
         {/* Contextual Factors (Multi-select) */}
         <div>
           <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-            Contextual Factors (optional)
+            Contextual Factors:
           </label>
           <div className="flex flex-wrap gap-1.5">
             {CONTEXTUAL_FACTORS.map(factor => {
@@ -261,12 +370,12 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
           </div>
         </div>
 
-        {/* Optional Notes */}
+        {/* Notes */}
         <div>
           <label className="text-xs font-semibold text-slate-300 block mb-1">Notes</label>
           <input
             type="text"
-            placeholder="Quick note about how you felt or setting..."
+            placeholder="Optional reflections..."
             value={notes}
             onChange={e => setNotes(e.target.value)}
             className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500"
@@ -297,13 +406,13 @@ export const LogNicotexModal: React.FC<LogNicotexModalProps> = ({
 
           <Button
             type="button"
-            variant="primary"
+            variant={isScheduled ? 'primary' : 'glow'}
             size="md"
             fullWidth
             disabled={isSubmitting}
             onClick={handleSave}
           >
-            {isSubmitting ? 'Saving...' : existingEvent ? 'Save Changes' : 'Confirm Piece'}
+            {isSubmitting ? 'Saving...' : existingEvent ? 'Save Changes' : isScheduled ? 'Confirm Scheduled Dose' : 'Log Unplanned Piece'}
           </Button>
         </div>
       </div>

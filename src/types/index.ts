@@ -2,6 +2,14 @@ export type NicotexStrength = '2mg' | '4mg';
 
 export type StoppingTimeline = '4weeks' | '8weeks' | '12weeks' | 'flexible' | 'baseline_only';
 
+export type ScheduleMode = 'actual_wake' | 'fixed_clock';
+
+export type SessionStatus = 'active' | 'completed' | 'interrupted';
+
+export type WindowStatus = 'upcoming' | 'due' | 'overdue' | 'logged' | 'missed' | 'rescheduled';
+
+export type MealDrinkType = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'coffee' | 'tea' | 'other_drink' | 'custom';
+
 export const CONSUMPTION_REASONS = [
   'Recommended by my reduction schedule',
   'Craving or physical withdrawal',
@@ -9,6 +17,7 @@ export const CONSUMPTION_REASONS = [
   'Boredom',
   'Work or concentration',
   'After a meal',
+  'Coffee or tea',
   'Driving or travelling',
   'Habit or automatic behaviour',
   'Social situation',
@@ -84,11 +93,17 @@ export interface AppSettings {
   lastBackupDate?: string;
   createdAt: number;
   updatedAt: number;
+
+  // Wake-up and dose scheduling settings
+  scheduleMode: ScheduleMode; // 'actual_wake' | 'fixed_clock'
+  firstDoseDelayMinutes: number; // e.g. 30, 45, 60
+  minSpacingMinutes: number; // minimum spacing between doses, e.g. 90
+  usualMeals?: { type: MealDrinkType; time: string; title: string }[];
 }
 
 export interface ConsumptionEvent {
   id: string;
-  timestamp: number;
+  timestamp: number; // epoch ms
   localDateStr: string; // YYYY-MM-DD
   product: string;
   strength: NicotexStrength;
@@ -98,6 +113,15 @@ export interface ConsumptionEvent {
   isScheduled: boolean;
   notes?: string;
   cravingEventId?: string;
+
+  // Extended session tracking
+  plannedWindowId?: string; // links to PlannedDoseWindow if scheduled
+  startTime?: number; // epoch ms when gum started
+  stopTime?: number; // epoch ms when chewing stopped
+  sessionStatus?: SessionStatus; // 'active' | 'completed' | 'interrupted'
+  interruptionReason?: string; // e.g. "Lunch ready", "Hot beverage"
+  cravingIntensity?: number; // 1 to 10
+  isUnplanned?: boolean;
 }
 
 export interface CravingEvent {
@@ -113,6 +137,48 @@ export interface CravingEvent {
   associatedConsumptionId?: string;
   notes?: string;
   durationSeconds?: number;
+}
+
+export interface DailyWakeSession {
+  id: string; // e.g. 'wake_2026-10-20'
+  dateStr: string; // YYYY-MM-DD
+  wakeTimestamp: number; // epoch ms when actually woke up
+  wakeTime: string; // 'HH:MM'
+  targetBedtime: string; // 'HH:MM'
+  scheduleMode: ScheduleMode;
+  firstPlannedDoseTime: string; // 'HH:MM'
+  firstPlannedDoseTimestamp: number;
+  auditHistory: {
+    timestamp: number;
+    action: string;
+    prevTime?: string;
+    newTime?: string;
+    reason?: string;
+  }[];
+}
+
+export interface PlannedDoseWindow {
+  id: string; // e.g. 'window_2026-10-20_0'
+  dateStr: string; // YYYY-MM-DD
+  windowIndex: number;
+  originalPlannedTime: string; // 'HH:MM'
+  originalPlannedTimestamp: number; // epoch ms
+  status: WindowStatus; // 'upcoming' | 'due' | 'overdue' | 'logged' | 'missed' | 'rescheduled'
+  actualConsumptionId?: string;
+  actualConsumptionTime?: string;
+  actualConsumptionTimestamp?: number;
+  delayMinutes?: number; // actual - planned in minutes
+  notes?: string;
+}
+
+export interface MealDrinkEvent {
+  id: string; // e.g. 'meal_timestamp'
+  dateStr: string; // YYYY-MM-DD
+  timestamp: number;
+  time: string; // 'HH:MM'
+  type: MealDrinkType;
+  title: string;
+  notes?: string;
 }
 
 export interface PlanPhase {
@@ -155,4 +221,6 @@ export interface DailySummaryStats {
   cravingsResisted: number;
   firstConsumptionTime?: number;
   lastConsumptionTime?: number;
+  unplannedCount: number;
+  interruptedCount: number;
 }

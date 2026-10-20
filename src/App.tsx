@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLocalDateString } from './db';
-import type { AppSettings, ConsumptionEvent, CravingEvent, ReductionPlan } from './types';
+import type {
+  AppSettings,
+  ConsumptionEvent,
+  CravingEvent,
+  ReductionPlan,
+  DailyWakeSession,
+  PlannedDoseWindow,
+  MealDrinkEvent
+} from './types';
 import { Header } from './components/Header';
 import { BottomNav, type TabType } from './components/BottomNav';
 import { DashboardView } from './views/DashboardView';
@@ -13,16 +21,23 @@ import { LogNicotexModal } from './components/LogNicotexModal';
 import { CravingInterceptionModal } from './components/CravingInterceptionModal';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { OnboardingModal } from './components/OnboardingModal';
+import { MealPlannerModal } from './components/MealPlannerModal';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
 
   // Modals state
   const [isLogModalOpen, setIsLogModalOpen] = useState<boolean>(false);
+  const [isScheduledDefault, setIsScheduledDefault] = useState<boolean>(false);
+  const [targetWindow, setTargetWindow] = useState<PlannedDoseWindow | null>(null);
   const [editingEvent, setEditingEvent] = useState<ConsumptionEvent | null>(null);
+
   const [isCravingModalOpen, setIsCravingModalOpen] = useState<boolean>(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
+  const [isMealModalOpen, setIsMealModalOpen] = useState<boolean>(false);
+
+  const todayStr = getLocalDateString();
 
   // Live query from Dexie IndexedDB
   const settings = useLiveQuery(() => db.settings.get(1));
@@ -35,6 +50,15 @@ export const App: React.FC = () => {
 
   const consumption = useLiveQuery(() => db.consumption.orderBy('timestamp').toArray()) || [];
   const cravings = useLiveQuery(() => db.cravings.orderBy('timestamp').toArray()) || [];
+
+  // Wake session, planned windows, and meal events for today
+  const wakeSession = useLiveQuery(() => db.wakeSessions.get(`wake_${todayStr}`)) || null;
+  const plannedWindows = useLiveQuery(() =>
+    db.plannedWindows.where('dateStr').equals(todayStr).sortBy('originalPlannedTimestamp')
+  ) || [];
+  const mealEvents = useLiveQuery(() =>
+    db.mealEvents.where('dateStr').equals(todayStr).sortBy('timestamp')
+  ) || [];
 
   // Check onboarding status on initial load
   useEffect(() => {
@@ -53,18 +77,26 @@ export const App: React.FC = () => {
     const newPiece: ConsumptionEvent = {
       id: `cons_${now}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: now,
-      localDateStr: getLocalDateString(new Date(now)),
+      localDateStr: todayStr,
       product: 'Nicotex',
       strength: settings?.strength || '2mg',
       quantity: 1,
       trigger: 'Habit or automatic behaviour',
       contextualFactors: [],
-      isScheduled: false
+      isScheduled: false,
+      isUnplanned: true,
+      sessionStatus: 'completed'
     };
     await db.consumption.put(newPiece);
   };
 
-  const handleOpenLogModal = (existing: ConsumptionEvent | null = null) => {
+  const handleOpenLogModal = (
+    isScheduled: boolean = false,
+    window: PlannedDoseWindow | null = null,
+    existing: ConsumptionEvent | null = null
+  ) => {
+    setIsScheduledDefault(isScheduled);
+    setTargetWindow(window);
     setEditingEvent(existing);
     setIsLogModalOpen(true);
   };
@@ -86,10 +118,15 @@ export const App: React.FC = () => {
             currentPlan={currentPlan || null}
             consumption={consumption}
             cravings={cravings}
+            wakeSession={wakeSession}
+            plannedWindows={plannedWindows}
+            mealEvents={mealEvents}
             onOpenLogModal={handleOpenLogModal}
             onOpenCravingModal={() => setIsCravingModalOpen(true)}
             onQuickLog={handleQuickLog}
             onNavigateToPlan={() => setActiveTab('plan')}
+            onOpenMealModal={() => setIsMealModalOpen(true)}
+            onWakeSessionUpdated={() => {}}
           />
         )}
 
@@ -98,7 +135,7 @@ export const App: React.FC = () => {
             cravings={cravings}
             consumption={consumption}
             onOpenCravingModal={() => setIsCravingModalOpen(true)}
-            onOpenLogModal={handleOpenLogModal}
+            onOpenLogModal={(existing) => handleOpenLogModal(false, null, existing)}
           />
         )}
 
@@ -139,9 +176,12 @@ export const App: React.FC = () => {
         onClose={() => {
           setIsLogModalOpen(false);
           setEditingEvent(null);
+          setTargetWindow(null);
         }}
         defaultStrength={settings?.strength || '2mg'}
         existingEvent={editingEvent}
+        targetWindow={targetWindow}
+        isScheduledDefault={isScheduledDefault}
       />
 
       <CravingInterceptionModal
@@ -149,19 +189,22 @@ export const App: React.FC = () => {
         onClose={() => setIsCravingModalOpen(false)}
         settings={settings || null}
         onOpenLogGum={(cravingId) => {
-          // Open log modal with craving ID linked
           setEditingEvent({
             id: `cons_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             timestamp: Date.now(),
-            localDateStr: getLocalDateString(),
+            localDateStr: todayStr,
             product: 'Nicotex',
             strength: settings?.strength || '2mg',
             quantity: 1,
             trigger: 'Craving or physical withdrawal',
             contextualFactors: [],
             isScheduled: false,
+            isUnplanned: true,
+            sessionStatus: 'completed',
             cravingEventId: cravingId
           });
+          setIsScheduledDefault(false);
+          setTargetWindow(null);
           setIsLogModalOpen(true);
         }}
       />
@@ -174,6 +217,12 @@ export const App: React.FC = () => {
       <OnboardingModal
         isOpen={isOnboardingOpen}
         onComplete={() => setIsOnboardingOpen(false)}
+      />
+
+      <MealPlannerModal
+        isOpen={isMealModalOpen}
+        onClose={() => setIsMealModalOpen(false)}
+        onMealSaved={() => {}}
       />
     </div>
   );

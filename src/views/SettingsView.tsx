@@ -12,13 +12,13 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   FileCode,
-  Info
+  Sunrise,
+  Clock
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Badge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
-import type { AppSettings, NicotexStrength } from '../types';
+import type { AppSettings, NicotexStrength, ScheduleMode } from '../types';
 import {
   updateSettings,
   exportDatabaseToJSON,
@@ -47,6 +47,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [baselinePieces, setBaselinePieces] = useState<number>(settings?.baselinePiecesPerDay || 8);
   const [wakeTime, setWakeTime] = useState<string>(settings?.wakeTime || '07:30');
   const [sleepTime, setSleepTime] = useState<string>(settings?.sleepTime || '23:30');
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>(settings?.scheduleMode || 'actual_wake');
+  const [firstDoseDelayMinutes, setFirstDoseDelayMinutes] = useState<number>(settings?.firstDoseDelayMinutes || 30);
+  const [minSpacingMinutes, setMinSpacingMinutes] = useState<number>(settings?.minSpacingMinutes || 90);
   const [isSaved, setIsSaved] = useState<boolean>(false);
 
   // Notifications
@@ -67,7 +70,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       currency,
       baselinePiecesPerDay: Number(baselinePieces),
       wakeTime,
-      sleepTime
+      sleepTime,
+      scheduleMode,
+      firstDoseDelayMinutes: Number(firstDoseDelayMinutes),
+      minSpacingMinutes: Number(minSpacingMinutes)
     });
     setIsSaved(true);
     onSettingsUpdated();
@@ -159,7 +165,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </p>
       </div>
 
-      {/* Storage and Privacy Warning (Section 3 & 13) */}
+      {/* Storage and Privacy Warning */}
       <div className="p-4 rounded-3xl bg-amber-950/25 border border-amber-800/40 space-y-2 text-xs">
         <div className="flex items-center space-x-2 text-amber-300 font-bold">
           <ShieldAlert size={16} />
@@ -173,7 +179,106 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </p>
       </div>
 
-      {/* Configuration Card */}
+      {/* Schedule & Wake-Up Routine Configuration */}
+      <Card className="space-y-4">
+        <div className="flex items-center space-x-2">
+          <Sunrise size={16} className="text-amber-400" />
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            Wake-Up Routine & Schedule Timing
+          </h3>
+        </div>
+
+        <div>
+          <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+            Schedule Generation Mode:
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setScheduleMode('actual_wake')}
+              className={`p-2.5 rounded-xl border text-left text-xs transition-all leading-tight ${
+                scheduleMode === 'actual_wake'
+                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 font-bold'
+                  : 'bg-slate-800/40 border-slate-700/60 text-slate-400'
+              }`}
+            >
+              <span className="block font-bold">Actual Wake-Up</span>
+              <span className="text-[10px] text-slate-400 mt-0.5 block">Calculates from "I just woke up" tap</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setScheduleMode('fixed_clock')}
+              className={`p-2.5 rounded-xl border text-left text-xs transition-all leading-tight ${
+                scheduleMode === 'fixed_clock'
+                  ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200 font-bold'
+                  : 'bg-slate-800/40 border-slate-700/60 text-slate-400'
+              }`}
+            >
+              <span className="block font-bold">Fixed Clock Time</span>
+              <span className="text-[10px] text-slate-400 mt-0.5 block">Uses static configured waking time</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">
+              Delay before 1st dose
+            </label>
+            <select
+              value={firstDoseDelayMinutes}
+              onChange={e => setFirstDoseDelayMinutes(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
+            >
+              <option value={15}>15 Minutes</option>
+              <option value={30}>30 Minutes</option>
+              <option value={45}>45 Minutes</option>
+              <option value={60}>60 Minutes</option>
+              <option value={90}>90 Minutes</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">
+              Minimum Spacing Buffer
+            </label>
+            <select
+              value={minSpacingMinutes}
+              onChange={e => setMinSpacingMinutes(Number(e.target.value))}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100"
+            >
+              <option value={60}>60 Minutes (1h)</option>
+              <option value={90}>90 Minutes (1.5h)</option>
+              <option value={120}>120 Minutes (2h)</option>
+              <option value={150}>150 Minutes (2.5h)</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Usual Wake Time</label>
+            <input
+              type="time"
+              value={wakeTime}
+              onChange={e => setWakeTime(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-300 block mb-1">Usual Sleep Time</label>
+            <input
+              type="time"
+              value={sleepTime}
+              onChange={e => setSleepTime(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
+            />
+          </div>
+        </div>
+      </Card>
+
+      {/* Product & Pack Parameters */}
       <Card className="space-y-4">
         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
           Product & Pack Parameters
@@ -219,7 +324,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               min="1"
               value={packPrice}
               onChange={e => setPackPrice(Number(e.target.value))}
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
             />
           </div>
 
@@ -230,29 +335,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               min="1"
               value={packQuantity}
               onChange={e => setPackQuantity(Number(e.target.value))}
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1">Wake Time</label>
-            <input
-              type="time"
-              value={wakeTime}
-              onChange={e => setWakeTime(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-300 block mb-1">Sleep Time</label>
-            <input
-              type="time"
-              value={sleepTime}
-              onChange={e => setSleepTime(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+              className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
             />
           </div>
         </div>
@@ -266,7 +349,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             min="1"
             value={baselinePieces}
             onChange={e => setBaselinePieces(Number(e.target.value))}
-            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100"
+            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 font-mono"
           />
         </div>
 
@@ -288,7 +371,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </Button>
       </Card>
 
-      {/* Backup, Restore & CSV Export Card (Section 13) */}
+      {/* Backup, Restore & CSV Export Card */}
       <Card className="space-y-4">
         <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
           Data Export & Restore
@@ -351,7 +434,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </Card>
 
-      {/* iOS Notifications & Safari Installation (Section 4 & 12) */}
+      {/* iPhone 17 & Notifications */}
       <Card className="space-y-3">
         <div className="flex items-center space-x-2">
           <Smartphone size={16} className="text-cyan-400" />
@@ -394,7 +477,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <h3 className="text-xs font-bold uppercase tracking-wider">Danger Zone</h3>
         </div>
         <p className="text-xs text-slate-400">
-          Permanently clear all consumption records, craving events, and reduction plans from this device.
+          Permanently clear all consumption records, craving events, dose windows, and reduction plans from this device.
         </p>
         <Button
           variant="danger"
@@ -407,7 +490,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* Version Indicator */}
       <div className="text-center text-[11px] text-slate-600 space-y-1">
-        <p>Nicotex OS • Version 1.0.0 (Production Build)</p>
+        <p>Nicotex OS • Version 2.0.0 (Persistent Dose Timers & Routine)</p>
         <p>Client-side IndexedDB • Zero Cloud Telemetry</p>
       </div>
 

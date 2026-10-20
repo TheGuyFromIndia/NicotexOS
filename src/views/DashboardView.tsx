@@ -7,17 +7,28 @@ import {
   TrendingDown,
   DollarSign,
   AlertTriangle,
-  CheckCircle2,
   Calendar,
-  Sparkles,
   ChevronRight,
-  RotateCcw
+  Utensils,
+  AlertCircle
 } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { ProgressBar } from '../components/ui/ProgressBar';
-import type { AppSettings, ConsumptionEvent, CravingEvent, ReductionPlan } from '../types';
+import { WakeUpCard } from '../components/WakeUpCard';
+import { DoseTimerCard } from '../components/DoseTimerCard';
+import { WhatShouldIDoCard } from '../components/WhatShouldIDoCard';
+import { DailyTimeline } from '../components/DailyTimeline';
+import type {
+  AppSettings,
+  ConsumptionEvent,
+  CravingEvent,
+  ReductionPlan,
+  DailyWakeSession,
+  PlannedDoseWindow,
+  MealDrinkEvent
+} from '../types';
 import { getLocalDateString } from '../db';
 import {
   calculateCostPerPiece,
@@ -34,10 +45,15 @@ interface DashboardViewProps {
   currentPlan: ReductionPlan | null;
   consumption: ConsumptionEvent[];
   cravings: CravingEvent[];
-  onOpenLogModal: (existingEvent?: ConsumptionEvent | null) => void;
+  wakeSession: DailyWakeSession | null;
+  plannedWindows: PlannedDoseWindow[];
+  mealEvents: MealDrinkEvent[];
+  onOpenLogModal: (isScheduled: boolean, targetWindow?: PlannedDoseWindow | null, existingEvent?: ConsumptionEvent | null) => void;
   onOpenCravingModal: () => void;
   onQuickLog: () => void;
   onNavigateToPlan: () => void;
+  onOpenMealModal: () => void;
+  onWakeSessionUpdated: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -45,17 +61,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   currentPlan,
   consumption,
   cravings,
+  wakeSession,
+  plannedWindows,
+  mealEvents,
   onOpenLogModal,
   onOpenCravingModal,
   onQuickLog,
-  onNavigateToPlan
+  onNavigateToPlan,
+  onOpenMealModal,
+  onWakeSessionUpdated
 }) => {
   const todayStr = getLocalDateString();
   const [now, setNow] = useState<number>(Date.now());
 
-  // Update timer live every 30 seconds
+  // Update timer live every 15 seconds
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30000);
+    const timer = setInterval(() => setNow(Date.now()), 15000);
     return () => clearInterval(timer);
   }, []);
 
@@ -72,7 +93,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Last Consumption
   const sortedConsumption = [...consumption].sort((a, b) => b.timestamp - a.timestamp);
   const lastEvent = sortedConsumption[0];
-  const elapsed = lastEvent ? formatElapsedTime(lastEvent.timestamp, now) : null;
+  const elapsed = lastEvent ? formatElapsedTime(lastEvent.startTime || lastEvent.timestamp, now) : null;
+
+  // Unplanned and Interrupted counts today
+  const unplannedToday = todayEvents.filter(e => !e.isScheduled).length;
+  const interruptedToday = todayEvents.filter(e => e.sessionStatus === 'interrupted').length;
 
   // Financial Cost Metrics
   const packPrice = settings?.packPrice || 115;
@@ -87,7 +112,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Spending this week (last 7 days)
   const rolling7DayAvg = calculateSevenDayRollingAverage(consumption, todayStr);
   const estimatedMonthlySpending = Number((rolling7DayAvg * 30 * costPerPiece).toFixed(0));
-  const estimatedAnnualSpending = Number((rolling7DayAvg * 365 * costPerPiece).toFixed(0));
 
   // Avoided spending compared to baseline
   const uniqueDatesCount = Math.max(1, new Set(consumption.map(c => c.localDateStr)).size);
@@ -108,8 +132,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const cravingsResisted = cravings.filter(c => c.outcome === 'resisted' || c.outcome === 'postponed').length;
 
   return (
-    <div className="space-y-5 pb-24 max-w-md mx-auto px-4 pt-4">
-      {/* Exceeded Target Supportive Banner */}
+    <div className="space-y-4 pb-28 max-w-md mx-auto px-4 pt-4">
+      {/* Exceeded Target Supportive Banner (Relapse-Resistant Phrasing) */}
       {isOverTarget && (
         <div className="p-4 rounded-3xl bg-amber-950/30 border border-amber-800/40 space-y-2 animate-in fade-in">
           <div className="flex items-center space-x-2 text-amber-300 font-bold text-xs">
@@ -123,7 +147,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onOpenLogModal(lastEvent)}
+              onClick={() => onOpenLogModal(false, null, lastEvent)}
               className="text-xs text-amber-300 border-amber-800/60 hover:bg-amber-950/40"
             >
               Add reflection note
@@ -132,48 +156,75 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Primary Action Buttons (Section 7 & 8) */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* 1. Wake-Up Card / Start of Day Workflow */}
+      <WakeUpCard
+        wakeSession={wakeSession}
+        settings={settings}
+        targetPieces={targetPieces}
+        onWakeSessionUpdated={onWakeSessionUpdated}
+      />
+
+      {/* 2. Persistent Live Dose Timers */}
+      <DoseTimerCard
+        plannedWindows={plannedWindows}
+        consumptionEvents={todayEvents}
+        onOpenLogModal={(isScheduled, window) => onOpenLogModal(isScheduled, window)}
+      />
+
+      {/* 3. Action Buttons: Scheduled Dose, Unplanned Dose, Craving Interceptor */}
+      <div className="space-y-2">
+        <div className="grid grid-cols-2 gap-2.5">
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => onOpenLogModal(true)}
+            className="flex items-center justify-center py-3 rounded-2xl text-xs font-extrabold shadow-cyan-500/20"
+          >
+            <Clock size={15} className="mr-1.5" />
+            <span>Log Scheduled Dose</span>
+          </Button>
+
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => onOpenLogModal(false)}
+            className="flex items-center justify-center py-3 rounded-2xl text-xs font-extrabold text-amber-300 border-amber-500/30 hover:bg-slate-800 active:border-amber-400"
+          >
+            <AlertTriangle size={15} className="mr-1.5 text-amber-400" />
+            <span>Log Unplanned Dose</span>
+          </Button>
+        </div>
+
+        {/* Craving Interception Button */}
         <Button
           variant="glow"
-          size="lg"
-          onClick={() => onOpenLogModal(null)}
-          className="flex flex-col items-center justify-center py-4 h-auto space-y-1 rounded-3xl shadow-cyan-500/15"
-        >
-          <div className="flex items-center space-x-1.5">
-            <Plus size={18} className="stroke-[3]" />
-            <span className="text-base font-extrabold tracking-tight">Log Nicotex</span>
-          </div>
-          <span className="text-[11px] font-medium text-slate-900/80">
-            {settings?.strength || '2mg'} piece
-          </span>
-        </Button>
-
-        <Button
-          variant="secondary"
-          size="lg"
+          size="md"
+          fullWidth
           onClick={onOpenCravingModal}
-          className="flex flex-col items-center justify-center py-4 h-auto space-y-1 rounded-3xl bg-slate-900/90 border-amber-500/30 text-amber-200 hover:bg-slate-800 shadow-md active:border-amber-400"
+          className="bg-gradient-to-r from-amber-400 via-orange-400 to-cyan-400 text-slate-950 py-3 rounded-2xl font-bold shadow-amber-500/15"
         >
-          <div className="flex items-center space-x-1.5">
-            <ShieldAlert size={18} className="text-amber-400 stroke-[2.5]" />
-            <span className="text-base font-extrabold tracking-tight text-slate-100">I'm Craving</span>
-          </div>
-          <span className="text-[11px] font-medium text-amber-300/80">
-            3-min pause timer
-          </span>
+          <ShieldAlert size={17} className="mr-2 text-slate-950" />
+          <span>I'm Craving Nicotex (3-Min Pause)</span>
         </Button>
       </div>
 
-      {/* Main Today Tracker Card */}
-      <Card className="relative overflow-hidden space-y-5">
+      {/* 4. Quick "What should I do now?" Guidance Panel */}
+      <WhatShouldIDoCard
+        wakeSession={wakeSession}
+        plannedWindows={plannedWindows}
+        consumptionEvents={todayEvents}
+        mealEvents={mealEvents}
+      />
+
+      {/* 5. Daily Consumption & Allowance Card */}
+      <Card className="relative overflow-hidden space-y-4">
         <div className="flex items-center justify-between">
           <div className="space-y-0.5">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Today's Consumption
             </span>
             <div className="flex items-baseline space-x-2">
-              <span className="text-4xl font-black tracking-tight text-slate-100">
+              <span className="text-3xl font-black tracking-tight text-slate-100">
                 {todayCount}
               </span>
               <span className="text-sm font-semibold text-slate-400">
@@ -192,7 +243,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="text-[11px] text-slate-400">
               {isOverTarget
                 ? `${todayCount - targetPieces} above plan`
-                : `${remainingAllowance} remaining under target`}
+                : `${remainingAllowance} remaining allowance`}
             </p>
           </div>
         </div>
@@ -203,27 +254,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           variant={isOverTarget ? 'amber' : 'cyan'}
         />
 
-        {/* Last Consumption Status */}
-        <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
-          <div className="flex items-center space-x-2 text-slate-400">
-            <Clock size={15} className="text-cyan-400" />
-            <span>Last piece:</span>
-            <span className="font-semibold text-slate-200">
-              {elapsed ? elapsed.formatted : 'None today'}
-            </span>
-          </div>
-
-          {lastEvent && (
-            <span className="text-[11px] text-slate-400 truncate max-w-[140px]">
-              "{lastEvent.trigger}"
-            </span>
-          )}
+        {/* Breakdown row: Unplanned & Interrupted sessions */}
+        <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+          <span>Unplanned: <strong className="text-amber-400">{unplannedToday}</strong></span>
+          <span>Interrupted: <strong className="text-slate-300">{interruptedToday}</strong></span>
+          <span>Last: <strong className="text-slate-200">{elapsed ? elapsed.formatted : 'None'}</strong></span>
         </div>
       </Card>
 
-      {/* Streak & Adherence Counter */}
+      {/* 6. Visual Timeline & Meal Planning */}
+      <DailyTimeline
+        wakeSession={wakeSession}
+        plannedWindows={plannedWindows}
+        consumptionEvents={todayEvents}
+        mealEvents={mealEvents}
+        cravings={cravings}
+        onOpenLogModal={(isScheduled, window) => onOpenLogModal(isScheduled, window)}
+        onOpenMealModal={onOpenMealModal}
+      />
+
+      {/* 7. Adherence Streak & Rolling Average */}
       <div className="grid grid-cols-2 gap-3">
-        <Card className="space-y-2 p-4">
+        <Card className="space-y-1.5 p-4">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-400">Adherence Streak</span>
             <Flame size={16} className="text-amber-400" />
@@ -237,7 +289,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </p>
         </Card>
 
-        <Card className="space-y-2 p-4">
+        <Card className="space-y-1.5 p-4">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-400">7-Day Rolling Avg</span>
             <TrendingDown size={16} className="text-emerald-400" />
@@ -252,7 +304,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </Card>
       </div>
 
-      {/* Financial Cost Card (Section 6.A) */}
+      {/* 8. Financial Expenditure Card */}
       <Card className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
@@ -289,7 +341,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
-        {/* Avoided expenditure estimate banner */}
+        {/* Avoided expenditure estimate */}
         <div className="p-3 rounded-2xl bg-emerald-950/20 border border-emerald-900/40 flex items-center justify-between">
           <div className="space-y-0.5">
             <span className="text-xs font-semibold text-emerald-300 block">
@@ -305,7 +357,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </Card>
 
-      {/* Progress & Reduction Phase Snapshot */}
+      {/* 9. Reduction Plan Snapshot */}
       <Card
         interactive
         onClick={onNavigateToPlan}
@@ -335,58 +387,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span>Avg Gap: <strong className="text-slate-200">{avgIntervalMin ? `${avgIntervalMin}m` : '—'}</strong></span>
         </div>
       </Card>
-
-      {/* Today's Logged Entries */}
-      <div className="space-y-2 pt-2">
-        <div className="flex items-center justify-between px-1">
-          <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-            Today's Log ({todayEvents.length})
-          </h4>
-          <button
-            onClick={onQuickLog}
-            className="text-xs text-cyan-400 hover:text-cyan-300 font-semibold"
-          >
-            + Quick Log
-          </button>
-        </div>
-
-        {todayEvents.length === 0 ? (
-          <div className="p-6 rounded-3xl bg-slate-900/40 border border-slate-800 text-center space-y-1">
-            <p className="text-xs text-slate-400">No Nicotex pieces recorded today yet.</p>
-            <p className="text-[11px] text-slate-500">Tap "Log Nicotex" whenever you chew a piece.</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {todayEvents.map(event => {
-              const d = new Date(event.timestamp);
-              const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              return (
-                <div
-                  key={event.id}
-                  onClick={() => onOpenLogModal(event)}
-                  className="p-3.5 rounded-2xl bg-slate-900/80 border border-slate-800/80 hover:border-slate-700 flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer"
-                >
-                  <div className="space-y-0.5">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-bold text-slate-200">{timeStr}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
-                        {event.strength}
-                      </span>
-                      {event.isScheduled && (
-                        <span className="text-[10px] text-emerald-400 font-medium">Scheduled</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-400 truncate max-w-[220px]">
-                      {event.trigger}
-                    </p>
-                  </div>
-                  <ChevronRight size={14} className="text-slate-600" />
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 };

@@ -1,20 +1,43 @@
 import Dexie, { type EntityTable } from 'dexie';
-import type { AppSettings, ConsumptionEvent, CravingEvent, ReductionPlan } from '../types';
+import type {
+  AppSettings,
+  ConsumptionEvent,
+  CravingEvent,
+  ReductionPlan,
+  DailyWakeSession,
+  PlannedDoseWindow,
+  MealDrinkEvent
+} from '../types';
 
 export class NicotexDatabase extends Dexie {
   settings!: EntityTable<AppSettings, 'id'>;
   consumption!: EntityTable<ConsumptionEvent, 'id'>;
   cravings!: EntityTable<CravingEvent, 'id'>;
   plans!: EntityTable<ReductionPlan, 'id'>;
+  wakeSessions!: EntityTable<DailyWakeSession, 'id'>;
+  plannedWindows!: EntityTable<PlannedDoseWindow, 'id'>;
+  mealEvents!: EntityTable<MealDrinkEvent, 'id'>;
 
   constructor() {
     super('NicotexOS_DB');
-    // Schema definition with versioning
+    
+    // Version 1 (Initial release)
     this.version(1).stores({
       settings: 'id',
       consumption: 'id, timestamp, localDateStr, trigger, isScheduled, cravingEventId',
       cravings: 'id, timestamp, localDateStr, trigger, outcome, consumedNicotex',
       plans: 'id, status, createdAt'
+    });
+
+    // Version 2: Added wakeSessions, plannedWindows, mealEvents, and extended session tracking
+    this.version(2).stores({
+      settings: 'id',
+      consumption: 'id, timestamp, localDateStr, trigger, isScheduled, cravingEventId, plannedWindowId, sessionStatus',
+      cravings: 'id, timestamp, localDateStr, trigger, outcome, consumedNicotex',
+      plans: 'id, status, createdAt',
+      wakeSessions: 'id, dateStr, wakeTimestamp',
+      plannedWindows: 'id, dateStr, originalPlannedTimestamp, status, actualConsumptionId',
+      mealEvents: 'id, dateStr, timestamp, type'
     });
   }
 }
@@ -43,6 +66,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiIntegrationEnabled: false,
   createdAt: Date.now(),
   updatedAt: Date.now(),
+
+  // Extended schedule settings
+  scheduleMode: 'actual_wake',
+  firstDoseDelayMinutes: 30,
+  minSpacingMinutes: 90,
+  usualMeals: [
+    { type: 'breakfast', time: '08:30', title: 'Breakfast' },
+    { type: 'coffee', time: '10:30', title: 'Morning Coffee' },
+    { type: 'lunch', time: '13:00', title: 'Lunch' },
+    { type: 'tea', time: '17:00', title: 'Evening Tea' },
+    { type: 'dinner', time: '20:30', title: 'Dinner' }
+  ]
 };
 
 export async function getSettings(): Promise<AppSettings> {
@@ -50,6 +85,12 @@ export async function getSettings(): Promise<AppSettings> {
   if (!existing) {
     await db.settings.put(DEFAULT_SETTINGS);
     return DEFAULT_SETTINGS;
+  }
+  // Backfill any newly added fields for existing records
+  if (!existing.scheduleMode) {
+    const upgraded = { ...DEFAULT_SETTINGS, ...existing };
+    await db.settings.put(upgraded);
+    return upgraded;
   }
   return existing;
 }
@@ -79,23 +120,29 @@ export function getLocalDateString(date: Date = new Date()): string {
  * Export full IndexedDB dataset as JSON string
  */
 export async function exportDatabaseToJSON(): Promise<string> {
-  const [settings, consumption, cravings, plans] = await Promise.all([
+  const [settings, consumption, cravings, plans, wakeSessions, plannedWindows, mealEvents] = await Promise.all([
     db.settings.toArray(),
     db.consumption.orderBy('timestamp').toArray(),
     db.cravings.orderBy('timestamp').toArray(),
-    db.plans.toArray()
+    db.plans.toArray(),
+    db.wakeSessions.toArray(),
+    db.plannedWindows.toArray(),
+    db.mealEvents.toArray()
   ]);
 
   const payload = {
     app: 'NicotexOS',
-    version: '1.0.0',
+    version: '2.0.0',
     exportTimestamp: Date.now(),
     exportDateFormatted: new Date().toISOString(),
     data: {
       settings,
       consumption,
       cravings,
-      plans
+      plans,
+      wakeSessions,
+      plannedWindows,
+      mealEvents
     }
   };
 
@@ -107,7 +154,11 @@ export async function exportDatabaseToJSON(): Promise<string> {
  */
 export async function exportConsumptionToCSV(): Promise<string> {
   const items = await db.consumption.orderBy('timestamp').toArray();
-  const headers = ['ID', 'Date', 'Time', 'Product', 'Strength', 'Quantity', 'Trigger / Reason', 'Contextual Factors', 'Scheduled', 'Notes', 'CravingLinked'];
+  const headers = [
+    'ID', 'Date', 'Time', 'Product', 'Strength', 'Quantity',
+    'Trigger / Reason', 'Contextual Factors', 'Scheduled', 'Session Status',
+    'Interruption Reason', 'Craving Intensity', 'Notes', 'CravingLinked'
+  ];
   const rows = items.map(c => {
     const d = new Date(c.timestamp);
     const dateStr = d.toLocaleDateString();
@@ -123,6 +174,9 @@ export async function exportConsumptionToCSV(): Promise<string> {
       clean(c.trigger),
       clean((c.contextualFactors || []).join('; ')),
       c.isScheduled ? 'Yes' : 'No',
+      c.sessionStatus || 'completed',
+      clean(c.interruptionReason || ''),
+      c.cravingIntensity ?? '',
       clean(c.notes || ''),
       c.cravingEventId ? 'Yes' : 'No'
     ].join(',');
@@ -166,9 +220,17 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<{ succ
       return { success: false, message: 'Invalid Nicotex backup file format.', count: 0 };
     }
 
-    const { settings, consumption, cravings, plans } = parsed.data;
+    const { settings, consumption, cravings, plans, wakeSessions, plannedWindows, mealEvents } = parsed.data;
 
-    await db.transaction('rw', [db.settings, db.consumption, db.cravings, db.plans], async () => {
+    await db.transaction('rw', [
+      db.settings,
+      db.consumption,
+      db.cravings,
+      db.plans,
+      db.wakeSessions,
+      db.plannedWindows,
+      db.mealEvents
+    ], async () => {
       if (Array.isArray(settings) && settings.length > 0) {
         await db.settings.clear();
         await db.settings.bulkPut(settings);
@@ -191,9 +253,27 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<{ succ
           await db.plans.bulkPut(plans);
         }
       }
+      if (Array.isArray(wakeSessions)) {
+        await db.wakeSessions.clear();
+        if (wakeSessions.length > 0) {
+          await db.wakeSessions.bulkPut(wakeSessions);
+        }
+      }
+      if (Array.isArray(plannedWindows)) {
+        await db.plannedWindows.clear();
+        if (plannedWindows.length > 0) {
+          await db.plannedWindows.bulkPut(plannedWindows);
+        }
+      }
+      if (Array.isArray(mealEvents)) {
+        await db.mealEvents.clear();
+        if (mealEvents.length > 0) {
+          await db.mealEvents.bulkPut(mealEvents);
+        }
+      }
     });
 
-    const totalEvents = (consumption?.length || 0) + (cravings?.length || 0);
+    const totalEvents = (consumption?.length || 0) + (cravings?.length || 0) + (plannedWindows?.length || 0);
     return { success: true, message: `Successfully restored ${totalEvents} records!`, count: totalEvents };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -205,11 +285,22 @@ export async function importDatabaseFromJSON(jsonString: string): Promise<{ succ
  * Reset all data to factory default
  */
 export async function clearAllDatabaseData(): Promise<void> {
-  await db.transaction('rw', [db.settings, db.consumption, db.cravings, db.plans], async () => {
+  await db.transaction('rw', [
+    db.settings,
+    db.consumption,
+    db.cravings,
+    db.plans,
+    db.wakeSessions,
+    db.plannedWindows,
+    db.mealEvents
+  ], async () => {
     await db.settings.clear();
     await db.consumption.clear();
     await db.cravings.clear();
     await db.plans.clear();
+    await db.wakeSessions.clear();
+    await db.plannedWindows.clear();
+    await db.mealEvents.clear();
     await db.settings.put(DEFAULT_SETTINGS);
   });
 }
